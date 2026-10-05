@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.Mounter" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.Mounter" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">#F4F7F8</item>
+        <item name="android:navigationBarColor">#F4F7F8</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
 </resources>
