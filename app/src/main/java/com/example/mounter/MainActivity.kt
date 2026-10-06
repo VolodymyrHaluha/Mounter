@@ -1,6 +1,9 @@
 package com.example.mounter
 
 import android.os.Bundle
+import android.nfc.NfcAdapter
+import android.nfc.Tag
+import android.os.SystemClock
 import android.content.Context
 import android.graphics.BitmapFactory
 import androidx.core.content.FileProvider
@@ -119,10 +122,42 @@ private class ProjectStore(private val context: Context) {
     }
 }
 
-class MainActivity : ComponentActivity() {
+class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
+    private val nfcAdapter by lazy { NfcAdapter.getDefaultAdapter(this) }
+    internal var onAttendanceTag: ((Tag) -> Unit)? = null
+    private var lastScanAt = -10_000L
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MounterTheme { MounterApp() } }
+        setContent { MounterTheme { AttendanceGate(this) } }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if(nfcAdapter?.isEnabled == true) {
+            nfcAdapter?.enableReaderMode(this, this,
+                NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B or
+                    NfcAdapter.FLAG_READER_NFC_F or NfcAdapter.FLAG_READER_NFC_V or
+                    NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS, null)
+        }
+    }
+
+    override fun onPause() {
+        nfcAdapter?.disableReaderMode(this)
+        super.onPause()
+    }
+
+    @Synchronized
+    internal fun suppressAttendanceScan() {
+        lastScanAt = SystemClock.elapsedRealtime()
+    }
+
+    @Synchronized
+    override fun onTagDiscovered(tag: Tag) {
+        val now = SystemClock.elapsedRealtime()
+        if(now - lastScanAt < 10_000L) return
+        lastScanAt = now
+        runOnUiThread { onAttendanceTag?.invoke(tag) }
     }
 }
 
