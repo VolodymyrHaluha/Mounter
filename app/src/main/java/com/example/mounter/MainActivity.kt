@@ -1,6 +1,7 @@
 package com.example.mounter
 
 import android.os.Bundle
+import android.content.Intent
 import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.os.SystemClock
@@ -129,7 +130,14 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if(intent.action == "com.example.mounter.action.ATTENDANCE_RETURN") suppressAttendanceScan()
         setContent { MounterTheme { AttendanceGate(this) } }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if(intent.action == "com.example.mounter.action.ATTENDANCE_RETURN") suppressAttendanceScan()
     }
 
     override fun onResume() {

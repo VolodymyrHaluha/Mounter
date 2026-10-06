@@ -2,11 +2,32 @@
 import argparse
 from pathlib import Path
 
+MOUNTER_CONTENT = '''        setContent { key(mounterLaunchVersion) { AppTheme { MounterAttendanceContent(this@MainActivity) { NetworkStatusScreen { callback ->
+            onNfcTag = callback
+            MounterAttendanceBridge.consumeForwardedTag(this)?.let { tag ->
+                window.decorView.post { onTagDiscovered(tag) }
+            }
+        } } } } }'''
+
 
 def replace_once(text, old, new, label):
     if text.count(old) != 1:
         raise SystemExit(f"Cannot locate exactly one {label}; no files changed.")
     return text.replace(old, new, 1)
+
+
+def add_reused_requests(text):
+    anchor = "    private var onNfcTag: ((String) -> Unit)? = null"
+    text = replace_once(text, anchor, anchor + "\n    private var mounterLaunchVersion by mutableStateOf(0)", "request version field")
+    anchor = "    override fun onResume() {"
+    return replace_once(text, anchor, '''    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (!MounterAttendanceBridge.isTrustedIncoming(intent)) return
+        setIntent(intent)
+        mounterLaunchVersion++
+    }
+
+''' + anchor, "reused activity handler")
 
 
 def main():
@@ -27,17 +48,13 @@ def main():
     text = texts[main_file]
     text = replace_once(text,
         "        enableEdgeToEdge()\n        setContent { AppTheme { NetworkStatusScreen { onNfcTag = it } } }",
-        '''        if (MounterAttendanceBridge.isRequest(intent) && callingPackage != MounterAttendanceBridge.MOUNTER_PACKAGE) {
+        '''        if (MounterAttendanceBridge.isRequest(intent) && !MounterAttendanceBridge.isTrustedRequest(this)) {
             finish()
             return
         }
         enableEdgeToEdge()
-        setContent { AppTheme { NetworkStatusScreen { callback ->
-            onNfcTag = callback
-            MounterAttendanceBridge.consumeForwardedTag(this)?.let { tag ->
-                window.decorView.post { onTagDiscovered(tag) }
-            }
-        } } }''', "attendance launch")
+''' + MOUNTER_CONTENT, "attendance launch")
+    text = add_reused_requests(text)
     text = replace_once(text,
         '        if (pendingCapture == null) {\n            pendingCapture = PendingCapture(action, identification)',
         '''        if (pendingCapture == null) {
@@ -78,10 +95,7 @@ def main():
         ('GlobalSyncResult(true, "${server.name} • вже збережено")', '${server.name} • вже збережено'),
     ]:
         new = '''GlobalSyncResult(true, "MESSAGE", confirmedAction =
-                if (server == ServerKind.LOCAL && record.action == "NFC") runCatching {
-                    fetchMounterAction(MounterConfirmationRequest(record.externalUuid,
-                        record.deviceName, record.deviceModel, record.bluetoothName.orEmpty()))
-                }.getOrNull() else null)'''.replace("MESSAGE", message)
+                mounterUploadAction(record, server, json))'''.replace("MESSAGE", message)
         text = replace_once(text, old, new, "event confirmation result")
     texts[api_file] = text
     texts[kiosk_file] = replace_once(texts[kiosk_file],
@@ -95,7 +109,7 @@ def main():
     </application>''', "provider declaration")
 
     additions = {java / name: Path(__file__).with_name(name).read_bytes()
-                 for name in ["MounterAttendanceBridge.kt", "MounterServerConfirmation.kt"]}
+                 for name in ["MounterAttendanceBridge.kt", "MounterServerConfirmation.kt", "MounterAttendanceContent.kt"]}
     backups = {path: path.with_name(path.name + ".before-mounter") for path in paths}
     if any(path.exists() for path in [*backups.values(), *additions]):
         raise SystemExit("A backup/addition already exists; no files changed.")
