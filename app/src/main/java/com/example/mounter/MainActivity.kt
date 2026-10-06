@@ -65,11 +65,12 @@ private val Orange = Color(0xFFF0A442)
 private val Red = Color(0xFFD96C67)
 private val Border = Color(0xFF537265)
 
-data class PhotoEntry(val path: String, val note: String = "", val id: String = UUID.randomUUID().toString())
+data class PhotoEntry(val path: String, val id: String = UUID.randomUUID().toString())
 data class WorkBlock(
     val id: String = UUID.randomUUID().toString(),
     val photos: List<PhotoEntry> = emptyList(),
-    val name: String = ""
+    val name: String = "",
+    val note: String = ""
 )
 data class Project(
     val name: String, val customer: String,
@@ -98,8 +99,12 @@ private class ProjectStore(private val context: Context) {
                     val photos = b.getJSONArray("photos")
                     WorkBlock(b.getString("id"), (0 until photos.length()).map { k ->
                         val photo = photos.getJSONObject(k)
-                        PhotoEntry(photo.getString("path"), photo.getString("note"), photo.getString("id"))
-                    }, name = b.optString("name", ""))
+                        PhotoEntry(path=photo.getString("path"), id=photo.getString("id"))
+                    }, name = b.optString("name", ""), note = if(b.has("note")) b.optionalText("note") else {
+                        // Preserve existing per-photo notes as one shared product note.
+                        (0 until photos.length()).map {photos.getJSONObject(it).optionalText("note")}
+                            .filter {it.isNotBlank()}.distinct().joinToString("\n\n")
+                    })
                 }, customerId = p.optionalText("customer_id").takeIf { it.isNotBlank() })
         }
     }
@@ -109,8 +114,8 @@ private class ProjectStore(private val context: Context) {
             val blocks = JSONArray()
             p.blocks.forEach { b ->
                 val photos = JSONArray()
-                b.photos.forEach { photo -> photos.put(JSONObject().put("id", photo.id).put("path", photo.path).put("note", photo.note)) }
-                blocks.put(JSONObject().put("id", b.id).put("name", b.name).put("photos", photos))
+                b.photos.forEach { photo -> photos.put(JSONObject().put("id", photo.id).put("path", photo.path)) }
+                blocks.put(JSONObject().put("id", b.id).put("name", b.name).put("note", b.note).put("photos", photos))
             }
             data.put(JSONObject().put("id", p.id).put("name", p.name).put("customer", p.customer).put("status", p.status.name).put("blocks", blocks).put("customer_id", p.customerId ?: JSONObject.NULL))
         }
@@ -407,7 +412,7 @@ private fun StatCard(label:String, value:String, note:String, color:Color, modif
     Row(Modifier.fillMaxWidth().clickable(onClick=onClick).padding(vertical=16.dp), verticalAlignment=Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(project.displayName, fontWeight=FontWeight.Bold, fontSize=16.sp)
-            Text("Блоків: ${project.blocks.size}", color=Muted, fontSize=12.sp)
+            Text("Виробів: ${project.blocks.size}", color=Muted, fontSize=12.sp)
         }
         StatusPill(project.status)
         Text(" ›", fontSize=25.sp, color=Muted)
@@ -487,35 +492,32 @@ private fun ObjectsScreen(projects: List<Project>, api: DirectoryApi, onError: (
 
 @Composable
 private fun ObjectCard(project: Project, modifier: Modifier, onPhoto: (WorkBlock, PhotoEntry) -> Unit, onOpen: () -> Unit) {
-    val photos=project.blocks.flatMap { block -> block.photos.map { block to it } }
     SurfaceCard(modifier) {
         Text(project.displayName, fontWeight=FontWeight.Bold, fontSize=18.sp,
             modifier=Modifier.fillMaxWidth().clickable(onClick=onOpen))
         Spacer(Modifier.height(6.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment=Alignment.CenterVertically) {
-            Text("Блоків: ${project.blocks.size}", color=Muted, fontSize=12.sp, modifier=Modifier.weight(1f))
+            Text("Виробів: ${project.blocks.size}", color=Muted, fontSize=12.sp, modifier=Modifier.weight(1f))
             StatusPill(project.status)
         }
         Spacer(Modifier.height(12.dp))
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement=Arrangement.spacedBy(14.dp)) {
-            if (photos.isEmpty()) {
-                item {
-                    Box(Modifier.fillMaxWidth().height(160.dp).clip(RoundedCornerShape(14.dp))
-                        .background(CanvasColor).clickable(onClick=onOpen), contentAlignment=Alignment.Center) {
-                        Text("Фото ще не додані", color=Muted)
+            items(project.blocks, key={it.id}) { product ->
+                Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                    Text(product.name.ifBlank {"Виріб без назви"}, fontWeight=FontWeight.SemiBold, fontSize=13.sp)
+                    if(product.photos.isEmpty()) {
+                        Box(Modifier.fillMaxWidth().height(160.dp).clip(RoundedCornerShape(14.dp))
+                            .background(CanvasColor).clickable(onClick=onOpen), contentAlignment=Alignment.Center) {
+                            Text("Фото ще не додані", color=Muted)
+                        }
                     }
-                }
-            }
-            items(photos, key={it.second.id}) { (block, photo) ->
-                Column {
-                    if (block.name.isNotBlank()) {
-                        Text(block.name, fontWeight=FontWeight.SemiBold, fontSize=13.sp)
-                        Spacer(Modifier.height(6.dp))
+                    product.photos.forEach {photo ->
+                        key(photo.id) {
+                            Box(Modifier.clickable { onPhoto(product, photo) }) { PhotoPreview(photo.path, height=160.dp) }
+                        }
                     }
-                    Box(Modifier.clickable { onPhoto(block, photo) }) { PhotoPreview(photo.path, height=160.dp) }
-                    Spacer(Modifier.height(8.dp))
-                    Text(photo.note.ifBlank { "Примітки ще не додані" },
-                        color=if(photo.note.isBlank()) Muted else Ink, fontSize=12.sp)
+                    Text(product.note.ifBlank {"Примітка ще не додана"},
+                        color=if(product.note.isBlank()) Muted else Ink, fontSize=12.sp)
                 }
             }
         }
@@ -592,7 +594,7 @@ private fun ObjectDetail(project: Project, onBack: () -> Unit, onPhoto: (WorkBlo
     Column(Modifier.fillMaxSize().padding(28.dp,20.dp)) {
         Row(verticalAlignment=Alignment.CenterVertically) {
             BackButton(onBack); Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {Text(project.displayName,fontWeight=FontWeight.Bold,fontSize=25.sp);Text("Блоків: ${project.blocks.size}",color=Muted,fontSize=12.sp)}
+            Column(Modifier.weight(1f)) {Text(project.displayName,fontWeight=FontWeight.Bold,fontSize=25.sp);Text("Виробів: ${project.blocks.size}",color=Muted,fontSize=12.sp)}
             var expanded by remember {mutableStateOf(false)}
             Box {
                 OutlinedButton(onClick={expanded=true}) {StatusPill(project.status);Text(" ▾")}
@@ -601,12 +603,12 @@ private fun ObjectDetail(project: Project, onBack: () -> Unit, onPhoto: (WorkBlo
                 }
             }
             Spacer(Modifier.width(12.dp))
-            Button(onClick={onUpdate(project.copy(blocks=project.blocks+WorkBlock()))}) {Text("Додати блок")}
+            Button(onClick={onUpdate(project.copy(blocks=project.blocks+WorkBlock()))}) {Text("Додати виріб")}
         }
         Spacer(Modifier.height(18.dp))
         LazyColumn(verticalArrangement=Arrangement.spacedBy(18.dp)) {
             items(project.blocks, key={it.id}) { block ->
-                PhotoBlock(block, { photo -> onPhoto(block, photo) }) { updated ->
+                ProductBlock(block, { photo -> onPhoto(block, photo) }) { updated ->
                     onUpdate(project.copy(blocks=project.blocks.map {if(it.id==block.id)updated else it}))
                 }
             }
@@ -615,7 +617,7 @@ private fun ObjectDetail(project: Project, onBack: () -> Unit, onPhoto: (WorkBlo
 }
 
 @Composable
-private fun PhotoBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpdate: (WorkBlock) -> Unit) {
+private fun ProductBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpdate: (WorkBlock) -> Unit) {
     val context=LocalContext.current
     val currentBlock by rememberUpdatedState(block)
     val update by rememberUpdatedState(onUpdate)
@@ -665,8 +667,8 @@ private fun PhotoBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpdate
             OutlinedTextField(
                 value=block.name,
                 onValueChange={name -> update(currentBlock.copy(name=name))},
-                label={Text("Назва блоку")},
-                placeholder={Text("Наприклад, кухня")},
+                label={Text("Назва виробу")},
+                placeholder={Text("Наприклад, шафа")},
                 singleLine=true,
                 modifier=Modifier.weight(1f)
             )
@@ -686,31 +688,21 @@ private fun PhotoBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpdate
         if(block.photos.isEmpty()) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.spacedBy(14.dp)) {
                 repeat(3) {
-                    Column(Modifier.weight(1f)) {
-                        Box(Modifier.fillMaxWidth().height(200.dp).clip(RoundedCornerShape(14.dp))
-                            .background(CanvasColor).clickable(enabled=!importing) { gallery.launch("image/*") },
-                            contentAlignment=Alignment.Center) {
-                            Text("Додати фото", color=Muted)
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        Text("Примітка з'явиться після додавання фото", color=Muted, fontSize=11.sp)
+                    Box(Modifier.weight(1f).height(200.dp).clip(RoundedCornerShape(14.dp))
+                        .background(CanvasColor).clickable(enabled=!importing) { gallery.launch("image/*") },
+                        contentAlignment=Alignment.Center) {
+                        Text("Додати фото", color=Muted)
                     }
                 }
             }
+            Spacer(Modifier.height(18.dp))
         }
         block.photos.chunked(3).forEach { rowPhotos ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.spacedBy(14.dp)) {
                 rowPhotos.forEach {photo ->
                     key(photo.id) {
-                        Column(Modifier.weight(1f)) {
-                            Box(Modifier.clickable { onPhoto(photo) }) { PhotoPreview(photo.path, height=200.dp) }
-                            Spacer(Modifier.height(8.dp))
-                            OutlinedTextField(
-                                value=photo.note,
-                                onValueChange={note -> update(currentBlock.copy(photos=currentBlock.photos.map {if(it.id==photo.id)it.copy(note=note) else it}))},
-                                label={Text("Примітки до фото")}, placeholder={Text("Характеристики та короткий опис")},
-                                modifier=Modifier.fillMaxWidth(), minLines=2
-                            )
+                        Box(Modifier.weight(1f).clickable {onPhoto(photo)}) {
+                            PhotoPreview(photo.path,height=200.dp)
                         }
                     }
                 }
@@ -718,6 +710,13 @@ private fun PhotoBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpdate
             }
             Spacer(Modifier.height(18.dp))
         }
+        OutlinedTextField(
+            value=block.note,
+            onValueChange={note -> update(currentBlock.copy(note=note))},
+            label={Text("Примітка до виробу")},
+            placeholder={Text("Характеристики та опис для всіх фото виробу")},
+            modifier=Modifier.fillMaxWidth(), minLines=3
+        )
     }
 }
 
