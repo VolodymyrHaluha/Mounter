@@ -8,6 +8,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.runtime.saveable.rememberSaveable
 import org.json.JSONArray
 import org.json.JSONObject
@@ -44,16 +45,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private val Ink = Color(0xFF172326)
-private val Muted = Color(0xFF718084)
-private val Teal = Color(0xFF0D8B7F)
-private val TealDark = Color(0xFF08766D)
-private val Mint = Color(0xFFE5F3EF)
-private val Surface = Color.White
-private val CanvasColor = Color(0xFFF4F7F8)
+private val Ink = Color(0xFFF0F6F3)
+private val Muted = Color(0xFFC0D1C9)
+private val Teal = Color(0xFF60D5B6)
+private val TealDark = Color(0xFFA4EBD6)
+private val Mint = Color(0xCC214B3D)
+private val Surface = Color(0xCC16261F)
+private val SolidSurface = Color(0xFF16261F)
+private val CanvasColor = Color(0xFF17261F)
 private val Orange = Color(0xFFF0A442)
 private val Red = Color(0xFFD96C67)
-private val Border = Color(0xFFE3E9EA)
+private val Border = Color(0xFF537265)
 
 data class PhotoEntry(val path: String, val note: String = "", val id: String = UUID.randomUUID().toString())
 data class WorkBlock(val id: String = UUID.randomUUID().toString(), val photos: List<PhotoEntry> = emptyList())
@@ -121,9 +123,19 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MounterTheme(content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = lightColorScheme(primary = Teal, background = CanvasColor, surface = Surface, onSurface = Ink),
+        colorScheme = darkColorScheme(
+            primary = Teal, onPrimary = CanvasColor,
+            primaryContainer = Mint, onPrimaryContainer = Ink,
+            secondary = TealDark, onSecondary = CanvasColor,
+            background = CanvasColor, onBackground = Ink,
+            surface = SolidSurface, onSurface = Ink,
+            surfaceVariant = Color(0xFF243E32), onSurfaceVariant = Muted,
+            surfaceContainer = SolidSurface, surfaceContainerHigh = SolidSurface,
+            surfaceContainerHighest = SolidSurface,
+            outline = Border, error = Red
+        ),
         typography = Typography(),
-        content = content
+        content = { CompositionLocalProvider(LocalContentColor provides Ink) { content() } }
     )
 }
 
@@ -140,22 +152,30 @@ fun MounterApp() {
         projects = updated
     }
     fun open(project: Project) { selectedId = project.id; screen = Screen.OBJECT_DETAIL }
-    Row(Modifier.fillMaxSize().background(CanvasColor)) {
-        NavigationRail(screen) { screen = it }
-        AnimatedContent(targetState = screen, label = "screen", modifier = Modifier.weight(1f)) { current ->
-            when (current) {
-                Screen.HOME -> HomeScreen(projects, ::open, { screen = Screen.OBJECTS }, { screen = Screen.TEAM })
-                Screen.OBJECTS -> ObjectsScreen(projects, ::open) { project ->
-                    val updated = projects + project
-                    store.save(updated)
-                    projects = updated
-                    open(project)
+    Box(Modifier.fillMaxSize().background(CanvasColor)) {
+        Image(
+            painter = painterResource(R.drawable.frop_logo_preview_01_1),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.matchParentSize()
+        )
+        Row(Modifier.fillMaxSize()) {
+            NavigationRail(screen) { screen = it }
+            AnimatedContent(targetState = screen, label = "screen", modifier = Modifier.weight(1f)) { current ->
+                when (current) {
+                    Screen.HOME -> HomeScreen(projects, ::open, { screen = Screen.OBJECTS }, { screen = Screen.TEAM })
+                    Screen.OBJECTS -> ObjectsScreen(projects, ::open) { project ->
+                        val updated = projects + project
+                        store.save(updated)
+                        projects = updated
+                        open(project)
+                    }
+                    Screen.TEAM -> TeamScreen()
+                    Screen.OBJECT_DETAIL -> projects.find { it.id == selectedId }?.let { project ->
+                        ObjectDetail(project, { screen = Screen.OBJECTS }, ::update)
+                    }
+                    Screen.PROFILE -> ProfileScreen()
                 }
-                Screen.TEAM -> TeamScreen()
-                Screen.OBJECT_DETAIL -> projects.find { it.id == selectedId }?.let { project ->
-                    ObjectDetail(project, { screen = Screen.OBJECTS }, ::update)
-                }
-                Screen.PROFILE -> ProfileScreen()
             }
         }
     }
@@ -169,7 +189,7 @@ private fun NavigationRail(active: Screen, onSelect: (Screen) -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(Modifier.size(48.dp).clip(RoundedCornerShape(14.dp)).background(Teal), contentAlignment = Alignment.Center) {
-            Text("М", color = Color.White, fontSize = 25.sp, fontWeight = FontWeight.Black)
+            Text("М", color = CanvasColor, fontSize = 25.sp, fontWeight = FontWeight.Black)
         }
         Spacer(Modifier.height(34.dp))
         items.forEach { (screen, label) ->
@@ -186,7 +206,7 @@ private fun NavigationRail(active: Screen, onSelect: (Screen) -> Unit) {
             Spacer(Modifier.height(8.dp))
         }
         Spacer(Modifier.weight(1f))
-        Box(Modifier.size(48.dp).clip(CircleShape).background(Color(0xFFD1E1DC)).clickable { onSelect(Screen.PROFILE) }, contentAlignment = Alignment.Center) {
+        Box(Modifier.size(48.dp).clip(CircleShape).background(Mint).clickable { onSelect(Screen.PROFILE) }, contentAlignment = Alignment.Center) {
             Text("АК", color = TealDark, fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.height(8.dp)); Text("Андрій", fontSize = 11.sp, color = Ink, fontWeight = FontWeight.SemiBold)
@@ -270,7 +290,7 @@ private fun StatCard(label:String, value:String, note:String, color:Color, modif
 
 @Composable private fun WorkerCompact(worker:Worker){Row(Modifier.fillMaxWidth().padding(vertical=6.dp),verticalAlignment=Alignment.CenterVertically){Avatar(worker,38);Spacer(Modifier.width(10.dp));Column(Modifier.weight(1f)){Text(worker.name,fontWeight=FontWeight.SemiBold,fontSize=12.sp,maxLines=1,overflow=TextOverflow.Ellipsis);Text(worker.role,color=Muted,fontSize=10.sp)};Box(Modifier.size(7.dp).clip(CircleShape).background(Teal))}}
 
-@Composable private fun Avatar(worker:Worker,size:Int){Box(Modifier.size(size.dp).clip(CircleShape).background(worker.color.copy(alpha=.18f)),contentAlignment=Alignment.Center){Text(worker.initials,color=worker.color,fontWeight=FontWeight.Bold,fontSize=(size*.32).sp)}}
+@Composable private fun Avatar(worker:Worker,size:Int){Box(Modifier.size(size.dp).clip(CircleShape).background(worker.color.copy(alpha=.18f)),contentAlignment=Alignment.Center){Text(worker.initials,color=Ink,fontWeight=FontWeight.Bold,fontSize=(size*.32).sp)}}
 
 @Composable private fun ProductSketch(color:Color,modifier:Modifier=Modifier){Canvas(modifier.padding(10.dp)){drawRoundRect(color.copy(alpha=.28f),Offset(size.width*.12f,size.height*.12f),Size(size.width*.76f,size.height*.76f),cornerRadius=androidx.compose.ui.geometry.CornerRadius(5f));drawRect(color,Offset(size.width*.2f,size.height*.24f),Size(size.width*.6f,size.height*.58f));drawLine(Color.White.copy(alpha=.7f),Offset(size.width*.5f,size.height*.25f),Offset(size.width*.5f,size.height*.81f),2f);drawCircle(Color.White,size.width*.025f,Offset(size.width*.46f,size.height*.52f));drawCircle(Color.White,size.width*.025f,Offset(size.width*.54f,size.height*.52f))}}
 
@@ -434,7 +454,7 @@ private fun PhotoPreview(path: String) {
     }
 }
 
-@Composable private fun StatusPill(status:WorkStatus){val data=when(status){WorkStatus.DONE->Triple("Виконано",Mint,TealDark);WorkStatus.IN_PROGRESS->Triple("В процесі",Color(0xFFFFF1DC),Color(0xFFB16B0D));WorkStatus.CANCELLED->Triple("Скасовано",Color(0xFFFBE9E7),Color(0xFFB54C47));WorkStatus.TODO->Triple("Очікує",CanvasColor,Muted)};Box(Modifier.clip(CircleShape).background(data.second).padding(10.dp,6.dp)){Text(data.first,color=data.third,fontSize=10.sp,fontWeight=FontWeight.Bold)}}
+@Composable private fun StatusPill(status:WorkStatus){val data=when(status){WorkStatus.DONE->Triple("Виконано",Mint,TealDark);WorkStatus.IN_PROGRESS->Triple("В процесі",Color(0xFF4A381D),Color(0xFFFFCE88));WorkStatus.CANCELLED->Triple("Скасовано",Color(0xFF492B29),Color(0xFFFFB4AC));WorkStatus.TODO->Triple("Очікує",CanvasColor,Muted)};Box(Modifier.clip(CircleShape).background(data.second).padding(10.dp,6.dp)){Text(data.first,color=data.third,fontSize=10.sp,fontWeight=FontWeight.Bold)}}
 
 @Composable private fun BackButton(onClick:()->Unit){Surface(Modifier.size(42.dp).clickable(onClick=onClick),shape=RoundedCornerShape(12.dp),color=Surface,border=androidx.compose.foundation.BorderStroke(1.dp,Border)){Box(contentAlignment=Alignment.Center){Text("‹",fontSize=28.sp,color=Ink)}}}
 @Composable private fun ProfileScreen(){Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center){SurfaceCard(Modifier.width(380.dp)){Row(verticalAlignment=Alignment.CenterVertically){Avatar(workers.first(),70);Spacer(Modifier.width(16.dp));Column{Text(workers.first().name,fontWeight=FontWeight.Bold,fontSize=20.sp);Text("Бригадир • бригада №3",color=Muted)}}}}}
