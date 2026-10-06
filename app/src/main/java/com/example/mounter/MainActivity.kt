@@ -3,6 +3,7 @@ package com.example.mounter
 import android.os.Bundle
 import android.content.Context
 import android.graphics.BitmapFactory
+import androidx.core.content.edit
 import androidx.core.content.FileProvider
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
@@ -15,6 +16,10 @@ import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -22,7 +27,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -42,7 +46,6 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -62,22 +65,23 @@ private val Orange = Color(0xFFF0A442)
 private val Red = Color(0xFFD96C67)
 private val Border = Color(0xFF537265)
 
-data class PhotoEntry(val path: String, val note: String = "", val id: String = UUID.randomUUID().toString())
+data class PhotoEntry(val path: String, val id: String = UUID.randomUUID().toString())
 data class WorkBlock(
     val id: String = UUID.randomUUID().toString(),
     val photos: List<PhotoEntry> = emptyList(),
-    val name: String = ""
+    val name: String = "",
+    val note: String = ""
 )
 data class Project(
     val name: String, val customer: String,
     val id: String = UUID.randomUUID().toString(),
     val status: WorkStatus = WorkStatus.TODO,
-    val blocks: List<WorkBlock> = listOf(WorkBlock())
+    val blocks: List<WorkBlock> = listOf(WorkBlock()),
+    val customerId: String? = null
 ) {
     // Keep the old name field readable for previously saved objects.
     val displayName: String get() = customer.ifBlank { name }
 }
-data class Worker(val initials: String, val name: String, val role: String, val color: Color)
 enum class WorkStatus { DONE, IN_PROGRESS, CANCELLED, TODO }
 enum class Screen { HOME, OBJECTS, TEAM, PROFILE, OBJECT_DETAIL }
 
@@ -95,9 +99,13 @@ private class ProjectStore(private val context: Context) {
                     val photos = b.getJSONArray("photos")
                     WorkBlock(b.getString("id"), (0 until photos.length()).map { k ->
                         val photo = photos.getJSONObject(k)
-                        PhotoEntry(photo.getString("path"), photo.getString("note"), photo.getString("id"))
-                    }, name = b.optString("name", ""))
-                })
+                        PhotoEntry(path=photo.getString("path"), id=photo.getString("id"))
+                    }, name = b.optString("name", ""), note = if(b.has("note")) b.optionalText("note") else {
+                        // Preserve existing per-photo notes as one shared product note.
+                        (0 until photos.length()).map {photos.getJSONObject(it).optionalText("note")}
+                            .filter {it.isNotBlank()}.distinct().joinToString("\n\n")
+                    })
+                }, customerId = p.optionalText("customer_id").takeIf { it.isNotBlank() })
         }
     }
     fun save(projects: List<Project>) {
@@ -106,8 +114,8 @@ private class ProjectStore(private val context: Context) {
             val blocks = JSONArray()
             p.blocks.forEach { b ->
                 val photos = JSONArray()
-                b.photos.forEach { photo -> photos.put(JSONObject().put("id", photo.id).put("path", photo.path).put("note", photo.note)) }
-                blocks.put(JSONObject().put("id", b.id).put("name", b.name).put("photos", photos))
+                b.photos.forEach { photo -> photos.put(JSONObject().put("id", photo.id).put("path", photo.path)) }
+                blocks.put(JSONObject().put("id", b.id).put("name", b.name).put("note", b.note).put("photos", photos))
             }
             data.put(JSONObject().put("id", p.id).put("name", p.name).put("customer", p.customer).put("status", p.status.name).put("blocks", blocks).put("customer_id", p.customerId ?: JSONObject.NULL))
         }
@@ -148,17 +156,60 @@ fun MounterApp() {
     val context = LocalContext.current
     val store = remember { ProjectStore(context) }
     var projects by remember { mutableStateOf(store.load()) }
-    val teamPreferences = remember { context.getSharedPreferences("team", Context.MODE_PRIVATE) }
-    var teamMembers by remember {
-        mutableStateOf(
-            teamPreferences.getStringSet("members", setOf("0", "1", "2", "3"))
-                .orEmpty().mapNotNull { it.toIntOrNull() }
-                .filter { it in workers.indices }.sorted()
-        )
+    val teamStore = remember { TeamStore(context) }
+    var teamMembers by remember { mutableStateOf(teamStore.load()) }
+    val latestTeam by rememberUpdatedState(teamMembers)
+    fun saveTeam(members: List<Worker>) {
+        val unique=members.distinctBy { it.id }
+        teamStore.save(unique)
+        teamMembers=unique
     }
-    fun saveTeam(members: List<Int>) {
-        teamPreferences.edit().putStringSet("members", members.map { it.toString() }.toSet()).apply()
-        teamMembers = members.sorted()
+    val apiPreferences = remember { context.getSharedPreferences("api", Context.MODE_PRIVATE) }
+    var apiUrl by remember { mutableStateOf(apiPreferences.getString("url", DEFAULT_API_URL) ?: DEFAULT_API_URL) }
+    val api = remember(apiUrl) { DirectoryApi(apiUrl) }
+    var databaseStatus by remember { mutableStateOf(DatabaseStatus.CHECKING) }
+    var connectionError by remember { mutableStateOf<String?>(null) }
+    var retry by remember { mutableIntStateOf(0) }
+    var settingsOpen by remember { mutableStateOf(false) }
+    val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    var lastPopup by remember { mutableStateOf<String?>(null) }
+    fun apiError(message: String) {
+        databaseStatus=DatabaseStatus.ERROR
+        connectionError=message
+        if(lastPopup!=message) {
+            lastPopup=message
+            scope.launch { snackbar.showSnackbar(message, actionLabel="Закрити") }
+        }
+    }
+    val lifecycleOwner=LocalLifecycleOwner.current
+    var foreground by remember { mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
+    DisposableEffect(lifecycleOwner) {
+        val observer=LifecycleEventObserver { _, event ->
+            if(event==Lifecycle.Event.ON_START) foreground=true
+            if(event==Lifecycle.Event.ON_STOP) foreground=false
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(api, retry, foreground) {
+        if(!foreground) return@LaunchedEffect
+        databaseStatus=DatabaseStatus.CHECKING
+        while(true) {
+            try {
+                api.health()
+                val ids=latestTeam.map {it.id}
+                if(ids.isNotEmpty()) {
+                    val refreshed=api.selectedEmployees(ids).associateBy {it.id}
+                    saveTeam(latestTeam.mapNotNull {if(it.id in ids) refreshed[it.id] else it})
+                }
+                databaseStatus=DatabaseStatus.CONNECTED
+                connectionError=null
+                lastPopup=null
+            } catch(error: kotlinx.coroutines.CancellationException) {throw error}
+            catch(error: Exception) {apiError(error.message ?: "Помилка підключення до БД.")}
+            delay(30000)
+        }
     }
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -196,14 +247,14 @@ fun MounterApp() {
             NavigationRail(screen) { screen = it }
             AnimatedContent(targetState = screen, label = "screen", modifier = Modifier.weight(1f)) { current ->
                 when (current) {
-                    Screen.HOME -> HomeScreen(projects, teamMembers.map { workers[it] }, ::open, { screen = Screen.OBJECTS }, { screen = Screen.TEAM })
-                    Screen.OBJECTS -> ObjectsScreen(projects, ::open, ::openPhoto) { project ->
+                    Screen.HOME -> HomeScreen(projects, teamMembers, api, databaseStatus, { settingsOpen=true }, ::open, { screen = Screen.OBJECTS }, { screen = Screen.TEAM })
+                    Screen.OBJECTS -> ObjectsScreen(projects, api, ::apiError, ::open, ::openPhoto) { project ->
                         val updated = projects + project
                         store.save(updated)
                         projects = updated
                         open(project)
                     }
-                    Screen.TEAM -> TeamScreen(teamMembers, ::saveTeam)
+                    Screen.TEAM -> TeamScreen(teamMembers, api, ::apiError, ::saveTeam)
                     Screen.OBJECT_DETAIL -> projects.find { it.id == selectedId }?.let { project ->
                         ObjectDetail(project, { screen = Screen.OBJECTS }, { block, photo -> openPhoto(project, block, photo) }, ::update)
                     }
@@ -211,6 +262,26 @@ fun MounterApp() {
                 }
             }
         }
+    }
+    Box(Modifier.fillMaxSize(), contentAlignment=Alignment.BottomCenter) {
+        SnackbarHost(snackbar, modifier=Modifier.padding(16.dp))
+    }
+    if(settingsOpen) {
+        var address by remember { mutableStateOf(apiUrl) }
+        val uri=android.net.Uri.parse(address.trim())
+        val valid=uri.scheme in listOf("http", "https") && !uri.host.isNullOrBlank() && uri.query==null && uri.fragment==null
+        AlertDialog(onDismissRequest={settingsOpen=false},title={Text("Підключення до БД")},
+            text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(address,{address=it},label={Text("Адреса API")},singleLine=true)
+                connectionError?.let {Text(it,color=Red)}
+            }},
+            confirmButton={TextButton(enabled=valid,onClick={
+                apiUrl=address.trim().trimEnd('/')
+                apiPreferences.edit { putString("url",apiUrl) }
+                lastPopup=null;retry++;settingsOpen=false
+            }) {Text("Підключити")}},
+            dismissButton={TextButton(onClick={settingsOpen=false}) {Text("Закрити")}}
+        )
     }
     photoSelection?.let { selection ->
         val photo = projects.find { it.id == selection[0] }?.blocks
@@ -276,7 +347,7 @@ private fun PageHeader(title: String, subtitle: String, action: (@Composable () 
 }
 
 @Composable
-private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (Project) -> Unit, onObjects: () -> Unit, onTeam: () -> Unit) {
+private fun HomeScreen(projects: List<Project>, team: List<Worker>, api: DirectoryApi, databaseStatus: DatabaseStatus, onConnection: () -> Unit, onProject: (Project) -> Unit, onObjects: () -> Unit, onTeam: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(28.dp, 22.dp, 28.dp, 18.dp)) {
         PageHeader("Добрий ранок, Андрію!", "Об’єктів: ${projects.size}") {
             Surface(modifier=Modifier.clickable(onClick=onConnection),shape=RoundedCornerShape(13.dp),color=Surface,border=androidx.compose.foundation.BorderStroke(1.dp,Border)) {
@@ -318,7 +389,7 @@ private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (
                     Text("Склад бригади не обрано. Додайте співробітників у вкладці «Бригада».", color=Muted, fontSize=12.sp)
                 } else {
                     LazyColumn(Modifier.weight(1f)) {
-                        items(team, key={it.initials}) { WorkerCompact(it) }
+                        items(team, key={it.id}) { WorkerCompact(it, api) }
                     }
                 }
             }
@@ -341,21 +412,26 @@ private fun StatCard(label:String, value:String, note:String, color:Color, modif
     Row(Modifier.fillMaxWidth().clickable(onClick=onClick).padding(vertical=16.dp), verticalAlignment=Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(project.displayName, fontWeight=FontWeight.Bold, fontSize=16.sp)
-            Text("Блоків: ${project.blocks.size}", color=Muted, fontSize=12.sp)
+            Text("Виробів: ${project.blocks.size}", color=Muted, fontSize=12.sp)
         }
         StatusPill(project.status)
         Text(" ›", fontSize=25.sp, color=Muted)
     }
 }
 
-@Composable private fun WorkerCompact(worker:Worker){Row(Modifier.fillMaxWidth().padding(vertical=6.dp),verticalAlignment=Alignment.CenterVertically){Avatar(worker,38);Spacer(Modifier.width(10.dp));Column(Modifier.weight(1f)){Text(worker.name,fontWeight=FontWeight.SemiBold,fontSize=12.sp,maxLines=1,overflow=TextOverflow.Ellipsis);Text(worker.role,color=Muted,fontSize=10.sp)};Box(Modifier.size(7.dp).clip(CircleShape).background(Teal))}}
-
-@Composable private fun Avatar(worker:Worker,size:Int){Box(Modifier.size(size.dp).clip(CircleShape).background(worker.color.copy(alpha=.18f)),contentAlignment=Alignment.Center){Text(worker.initials,color=Ink,fontWeight=FontWeight.Bold,fontSize=(size*.32).sp)}}
-
-@Composable private fun ProductSketch(color:Color,modifier:Modifier=Modifier){Canvas(modifier.padding(10.dp)){drawRoundRect(color.copy(alpha=.28f),Offset(size.width*.12f,size.height*.12f),Size(size.width*.76f,size.height*.76f),cornerRadius=androidx.compose.ui.geometry.CornerRadius(5f));drawRect(color,Offset(size.width*.2f,size.height*.24f),Size(size.width*.6f,size.height*.58f));drawLine(Color.White.copy(alpha=.7f),Offset(size.width*.5f,size.height*.25f),Offset(size.width*.5f,size.height*.81f),2f);drawCircle(Color.White,size.width*.025f,Offset(size.width*.46f,size.height*.52f));drawCircle(Color.White,size.width*.025f,Offset(size.width*.54f,size.height*.52f))}}
+@Composable private fun WorkerCompact(worker: Worker, api: DirectoryApi) {
+    Row(Modifier.fillMaxWidth().padding(vertical=6.dp),verticalAlignment=Alignment.CenterVertically) {
+        EmployeeAvatar(worker,api,38)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(worker.name,fontWeight=FontWeight.SemiBold,fontSize=12.sp)
+            if(worker.role.isNotBlank()) Text(worker.role,color=Muted,fontSize=10.sp)
+        }
+    }
+}
 
 @Composable
-private fun ObjectsScreen(projects: List<Project>, onProject: (Project) -> Unit, onPhoto: (Project, WorkBlock, PhotoEntry) -> Unit, onCreate: (Project) -> Unit) {
+private fun ObjectsScreen(projects: List<Project>, api: DirectoryApi, onError: (String) -> Unit, onProject: (Project) -> Unit, onPhoto: (Project, WorkBlock, PhotoEntry) -> Unit, onCreate: (Project) -> Unit) {
     var creating by rememberSaveable { mutableStateOf(false) }
     var customer by rememberSaveable { mutableStateOf("") }
     var chosenClient by remember { mutableStateOf<Client?>(null) }
@@ -390,10 +466,25 @@ private fun ObjectsScreen(projects: List<Project>, onProject: (Project) -> Unit,
     }
     if (creating) AlertDialog(
         onDismissRequest={creating=false}, title={Text("Новий об'єкт")},
-        text={ OutlinedTextField(customer, {customer=it}, label={Text("Замовник")}, singleLine=true) },
-        confirmButton={ TextButton(enabled=customer.isNotBlank(), onClick={
-            val value=customer.trim()
-            onCreate(Project(name=value, customer=value)); customer=""; creating=false
+        text={ Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
+            OutlinedTextField(customer, {customer=it;chosenClient=null}, label={Text("Замовник")}, singleLine=true)
+            if(chosenClient!=null) Text("Обрано: ${chosenClient!!.name}",color=Teal)
+            else {
+                if(searching) LinearProgressIndicator(Modifier.fillMaxWidth())
+                searchError?.let {Text(it,color=Red)}
+                if(!searching && clients.isEmpty() && searchError==null) Text("Замовників не знайдено",color=Muted)
+                LazyColumn(Modifier.heightIn(max=220.dp)) {
+                    items(clients,key={it.id}) {client ->
+                        Text(client.name,modifier=Modifier.fillMaxWidth().clickable {
+                            chosenClient=client;customer=client.name
+                        }.padding(vertical=12.dp))
+                    }
+                }
+            }
+        } },
+        confirmButton={ TextButton(enabled=chosenClient!=null, onClick={
+            chosenClient?.let {client -> onCreate(Project(name=client.name,customer=client.name,customerId=client.id))}
+            customer="";chosenClient=null;creating=false
         }) {Text("Створити")} },
         dismissButton={TextButton(onClick={creating=false}) {Text("Скасувати")}}
     )
@@ -401,71 +492,32 @@ private fun ObjectsScreen(projects: List<Project>, onProject: (Project) -> Unit,
 
 @Composable
 private fun ObjectCard(project: Project, modifier: Modifier, onPhoto: (WorkBlock, PhotoEntry) -> Unit, onOpen: () -> Unit) {
-    val photos=project.blocks.flatMap { block -> block.photos.map { block to it } }
     SurfaceCard(modifier) {
         Text(project.displayName, fontWeight=FontWeight.Bold, fontSize=18.sp,
             modifier=Modifier.fillMaxWidth().clickable(onClick=onOpen))
         Spacer(Modifier.height(6.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment=Alignment.CenterVertically) {
-            Text("Блоків: ${project.blocks.size}", color=Muted, fontSize=12.sp, modifier=Modifier.weight(1f))
+            Text("Виробів: ${project.blocks.size}", color=Muted, fontSize=12.sp, modifier=Modifier.weight(1f))
             StatusPill(project.status)
         }
         Spacer(Modifier.height(12.dp))
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement=Arrangement.spacedBy(14.dp)) {
-            if (photos.isEmpty()) {
-                item {
-                    Box(Modifier.fillMaxWidth().height(160.dp).clip(RoundedCornerShape(14.dp))
-                        .background(CanvasColor).clickable(onClick=onOpen), contentAlignment=Alignment.Center) {
-                        Text("Фото ще не додані", color=Muted)
+            items(project.blocks, key={it.id}) { product ->
+                Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                    Text(product.name.ifBlank {"Виріб без назви"}, fontWeight=FontWeight.SemiBold, fontSize=13.sp)
+                    if(product.photos.isEmpty()) {
+                        Box(Modifier.fillMaxWidth().height(160.dp).clip(RoundedCornerShape(14.dp))
+                            .background(CanvasColor).clickable(onClick=onOpen), contentAlignment=Alignment.Center) {
+                            Text("Фото ще не додані", color=Muted)
+                        }
                     }
-                }
-            }
-            items(photos, key={it.second.id}) { (block, photo) ->
-                Column {
-                    if (block.name.isNotBlank()) {
-                        Text(block.name, fontWeight=FontWeight.SemiBold, fontSize=13.sp)
-                        Spacer(Modifier.height(6.dp))
+                    product.photos.forEach {photo ->
+                        key(photo.id) {
+                            Box(Modifier.clickable { onPhoto(product, photo) }) { PhotoPreview(photo.path, height=160.dp) }
+                        }
                     }
-                    Box(Modifier.clickable { onPhoto(block, photo) }) { PhotoPreview(photo.path, height=160.dp) }
-                    Spacer(Modifier.height(8.dp))
-                    Text(photo.note.ifBlank { "Примітки ще не додані" },
-                        color=if(photo.note.isBlank()) Muted else Ink, fontSize=12.sp)
-                }
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-        Button(onClick=onOpen, modifier=Modifier.fillMaxWidth()) { Text("Відкрити об'єкт") }
-    }
-}
-
-@Composable
-private fun TeamScreen(members: List<Int>, onSave: (List<Int>) -> Unit) {
-    var selected by rememberSaveable { mutableStateOf(members) }
-    var saved by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize().padding(28.dp,22.dp)) {
-        PageHeader("Моя бригада", if(saved) "Склад збережено" else "Оберіть співробітників, які працюють з вами сьогодні") {
-            Button(onClick={onSave(selected);saved=true}) { Text("Зберегти склад") }
-        }
-        Spacer(Modifier.height(12.dp))
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement=Arrangement.spacedBy(14.dp)) {
-            if (photos.isEmpty()) {
-                item {
-                    Box(Modifier.fillMaxWidth().height(160.dp).clip(RoundedCornerShape(14.dp))
-                        .background(CanvasColor).clickable(onClick=onOpen), contentAlignment=Alignment.Center) {
-                        Text("Фото ще не додані", color=Muted)
-                    }
-                }
-            }
-            items(photos, key={it.second.id}) { (block, photo) ->
-                Column {
-                    if (block.name.isNotBlank()) {
-                        Text(block.name, fontWeight=FontWeight.SemiBold, fontSize=13.sp)
-                        Spacer(Modifier.height(6.dp))
-                    }
-                    Box(Modifier.clickable { onPhoto(block, photo) }) { PhotoPreview(photo.path, height=160.dp) }
-                    Spacer(Modifier.height(8.dp))
-                    Text(photo.note.ifBlank { "Примітки ще не додані" },
-                        color=if(photo.note.isBlank()) Muted else Ink, fontSize=12.sp)
+                    Text(product.note.ifBlank {"Примітка ще не додана"},
+                        color=if(product.note.isBlank()) Muted else Ink, fontSize=12.sp)
                 }
             }
         }
@@ -524,11 +576,25 @@ private fun TeamScreen(members: List<Worker>, api: DirectoryApi, onError: (Strin
 }
 
 @Composable
+private fun EmployeeChoice(worker: Worker, api: DirectoryApi, checked: Boolean, onChecked: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable {onChecked(!checked)}.padding(vertical=9.dp),verticalAlignment=Alignment.CenterVertically) {
+        EmployeeAvatar(worker,api,46)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(worker.name,fontWeight=FontWeight.SemiBold)
+            if(worker.role.isNotBlank()) Text(worker.role,color=Muted,fontSize=11.sp)
+        }
+        Checkbox(checked,onCheckedChange=onChecked)
+    }
+    HorizontalDivider(color=Border)
+}
+
+@Composable
 private fun ObjectDetail(project: Project, onBack: () -> Unit, onPhoto: (WorkBlock, PhotoEntry) -> Unit, onUpdate: (Project) -> Unit) {
     Column(Modifier.fillMaxSize().padding(28.dp,20.dp)) {
         Row(verticalAlignment=Alignment.CenterVertically) {
             BackButton(onBack); Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {Text(project.displayName,fontWeight=FontWeight.Bold,fontSize=25.sp);Text("Блоків: ${project.blocks.size}",color=Muted,fontSize=12.sp)}
+            Column(Modifier.weight(1f)) {Text(project.displayName,fontWeight=FontWeight.Bold,fontSize=25.sp);Text("Виробів: ${project.blocks.size}",color=Muted,fontSize=12.sp)}
             var expanded by remember {mutableStateOf(false)}
             Box {
                 OutlinedButton(onClick={expanded=true}) {StatusPill(project.status);Text(" ▾")}
@@ -537,12 +603,12 @@ private fun ObjectDetail(project: Project, onBack: () -> Unit, onPhoto: (WorkBlo
                 }
             }
             Spacer(Modifier.width(12.dp))
-            Button(onClick={onUpdate(project.copy(blocks=project.blocks+WorkBlock()))}) {Text("Додати блок")}
+            Button(onClick={onUpdate(project.copy(blocks=project.blocks+WorkBlock()))}) {Text("Додати виріб")}
         }
         Spacer(Modifier.height(18.dp))
         LazyColumn(verticalArrangement=Arrangement.spacedBy(18.dp)) {
             items(project.blocks, key={it.id}) { block ->
-                PhotoBlock(block, { photo -> onPhoto(block, photo) }) { updated ->
+                ProductBlock(block, { photo -> onPhoto(block, photo) }) { updated ->
                     onUpdate(project.copy(blocks=project.blocks.map {if(it.id==block.id)updated else it}))
                 }
             }
@@ -551,7 +617,7 @@ private fun ObjectDetail(project: Project, onBack: () -> Unit, onPhoto: (WorkBlo
 }
 
 @Composable
-private fun PhotoBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpdate: (WorkBlock) -> Unit) {
+private fun ProductBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpdate: (WorkBlock) -> Unit) {
     val context=LocalContext.current
     val currentBlock by rememberUpdatedState(block)
     val update by rememberUpdatedState(onUpdate)
@@ -582,7 +648,7 @@ private fun PhotoBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpdate
                                     file.outputStream().use {output -> input.copyTo(output)}
                                 } ?: error("Фото недоступне")
                                 PhotoEntry(file.absolutePath)
-                            } catch(e: Exception) {
+                            } catch(_: Exception) {
                                 target?.delete()
                                 null
                             }
@@ -601,8 +667,8 @@ private fun PhotoBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpdate
             OutlinedTextField(
                 value=block.name,
                 onValueChange={name -> update(currentBlock.copy(name=name))},
-                label={Text("Назва блоку")},
-                placeholder={Text("Наприклад, кухня")},
+                label={Text("Назва виробу")},
+                placeholder={Text("Наприклад, шафа")},
                 singleLine=true,
                 modifier=Modifier.weight(1f)
             )
@@ -614,7 +680,7 @@ private fun PhotoBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpdate
                     val file=File(context.filesDir,"photos/${UUID.randomUUID()}.jpg").also {it.parentFile?.mkdirs();it.createNewFile()}
                     pendingPath=file.absolutePath
                     camera.launch(FileProvider.getUriForFile(context,"${context.packageName}.photos",file))
-                } catch(e: Exception) {pendingPath?.let {File(it).delete()};pendingPath=null;error="Камера недоступна. Додайте фото з галереї."}
+                } catch(_: Exception) {pendingPath?.let {File(it).delete()};pendingPath=null;error="Камера недоступна. Додайте фото з галереї."}
             }) {Text("Сфотографувати")}
         }
         error?.let {Text(it,color=Red)}
@@ -622,31 +688,21 @@ private fun PhotoBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpdate
         if(block.photos.isEmpty()) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.spacedBy(14.dp)) {
                 repeat(3) {
-                    Column(Modifier.weight(1f)) {
-                        Box(Modifier.fillMaxWidth().height(200.dp).clip(RoundedCornerShape(14.dp))
-                            .background(CanvasColor).clickable(enabled=!importing) { gallery.launch("image/*") },
-                            contentAlignment=Alignment.Center) {
-                            Text("Додати фото", color=Muted)
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        Text("Примітка з'явиться після додавання фото", color=Muted, fontSize=11.sp)
+                    Box(Modifier.weight(1f).height(200.dp).clip(RoundedCornerShape(14.dp))
+                        .background(CanvasColor).clickable(enabled=!importing) { gallery.launch("image/*") },
+                        contentAlignment=Alignment.Center) {
+                        Text("Додати фото", color=Muted)
                     }
                 }
             }
+            Spacer(Modifier.height(18.dp))
         }
         block.photos.chunked(3).forEach { rowPhotos ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.spacedBy(14.dp)) {
                 rowPhotos.forEach {photo ->
                     key(photo.id) {
-                        Column(Modifier.weight(1f)) {
-                            Box(Modifier.clickable { onPhoto(photo) }) { PhotoPreview(photo.path, height=200.dp) }
-                            Spacer(Modifier.height(8.dp))
-                            OutlinedTextField(
-                                value=photo.note,
-                                onValueChange={note -> update(currentBlock.copy(photos=currentBlock.photos.map {if(it.id==photo.id)it.copy(note=note) else it}))},
-                                label={Text("Примітки до фото")}, placeholder={Text("Характеристики та короткий опис")},
-                                modifier=Modifier.fillMaxWidth(), minLines=2
-                            )
+                        Box(Modifier.weight(1f).clickable {onPhoto(photo)}) {
+                            PhotoPreview(photo.path,height=200.dp)
                         }
                     }
                 }
@@ -654,6 +710,13 @@ private fun PhotoBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpdate
             }
             Spacer(Modifier.height(18.dp))
         }
+        OutlinedTextField(
+            value=block.note,
+            onValueChange={note -> update(currentBlock.copy(note=note))},
+            label={Text("Примітка до виробу")},
+            placeholder={Text("Характеристики та опис для всіх фото виробу")},
+            modifier=Modifier.fillMaxWidth(), minLines=3
+        )
     }
 }
 
@@ -700,7 +763,7 @@ private fun PhotoViewer(photo: PhotoEntry, onClose: () -> Unit, onReplace: (Stri
             check(bounds.outWidth>0 && bounds.outHeight>0)
             replace(path)
             error=null
-        } catch(e: Exception) {
+        } catch(_: Exception) {
             File(path).delete()
             error="Не вдалося замінити фото. Спробуйте ще раз."
         }
@@ -736,7 +799,7 @@ private fun PhotoViewer(photo: PhotoEntry, onClose: () -> Unit, onReplace: (Stri
                     committed=true
                 } catch(e: kotlinx.coroutines.CancellationException) {
                     throw e
-                } catch(e: Exception) {
+                } catch(_: Exception) {
                     error="Не вдалося замінити фото. Спробуйте ще раз."
                 } finally {
                     if(!committed) copiedPath?.let {File(it).delete()}
@@ -774,7 +837,7 @@ private fun PhotoViewer(photo: PhotoEntry, onClose: () -> Unit, onReplace: (Stri
                                 pendingPath=file.absolutePath
                                 busy=true
                                 camera.launch(FileProvider.getUriForFile(context,"${context.packageName}.photos",file))
-                            } catch(e: Exception) {
+                            } catch(_: Exception) {
                                 pendingPath?.let {File(it).delete()};pendingPath=null;busy=false
                                 error="Камера недоступна. Виберіть фото з галереї."
                             }
@@ -782,7 +845,7 @@ private fun PhotoViewer(photo: PhotoEntry, onClose: () -> Unit, onReplace: (Stri
                     }
                 }
                 IconButton(onClick={
-                    try {onDelete()} catch(e: Exception) {error="Не вдалося видалити фото. Спробуйте ще раз."}
+                    try {onDelete()} catch(_: Exception) {error="Не вдалося видалити фото. Спробуйте ще раз."}
                 },enabled=!busy,modifier=Modifier.background(Color.Black.copy(alpha=.7f),CircleShape)
                     .semantics {contentDescription="Видалити фото"}) {
                     PhotoActionGlyph(delete=true)

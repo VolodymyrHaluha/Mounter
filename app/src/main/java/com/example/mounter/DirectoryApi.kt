@@ -2,6 +2,7 @@ package com.example.mounter
 
 import android.content.Context
 import android.net.Uri
+import androidx.core.content.edit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -32,7 +33,7 @@ internal class TeamStore(context: Context) {
         workers.distinctBy { it.id }.forEach {
             data.put(JSONObject().put("id", it.id).put("full_name", it.name).put("job_title", it.role).put("image_url", it.imageUrl))
         }
-        preferences.edit().putString("employees", data.toString()).apply()
+        preferences.edit { putString("employees", data.toString()) }
     }
 }
 
