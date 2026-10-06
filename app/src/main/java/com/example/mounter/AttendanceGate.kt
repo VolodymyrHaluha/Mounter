@@ -1,6 +1,6 @@
 package com.example.mounter
 
-import android.content.ComponentName
+import android.app.PendingIntent
 import android.content.Intent
 import android.database.ContentObserver
 import android.net.Uri
@@ -29,16 +29,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.UUID
 
 private const val ATTENDANCE_PACKAGE = "com.example.app"
 private const val ATTENDANCE_ACTION = "com.example.app.action.MOUNTER_ATTENDANCE"
+private const val RETURN_CALLBACK = "com.example.mounter.extra.ATTENDANCE_RETURN"
+private const val REQUEST_ID = "com.example.mounter.extra.ATTENDANCE_REQUEST_ID"
 private val attendanceUri = Uri.parse("content://com.example.app.mounter.attendance/status")
 
 private data class AttendanceAccess(
     val state: String = "locked",
     val generation: Long = 0,
     val eventId: String = "",
-    val message: String = "Відмітьте «Прихід», щоб відкрити головне меню."
+    val message: String = "Відмітьте «Прихід», щоб відкрити головне меню.",
+    val requestId: String = ""
 ) {
     val allowed: Boolean get() = state == "arrival" && eventId.isNotBlank()
 }
@@ -52,7 +56,8 @@ private fun readAttendanceAccess(activity: MainActivity): AttendanceAccess {
             state=it.getString(it.getColumnIndexOrThrow("state")),
             generation=it.getLong(it.getColumnIndexOrThrow("generation")),
             eventId=it.getString(it.getColumnIndexOrThrow("event_id")),
-            message=it.getString(it.getColumnIndexOrThrow("message"))
+            message=it.getString(it.getColumnIndexOrThrow("message")),
+            requestId=it.getColumnIndex("request_id").takeIf { column -> column >= 0 }?.let(it::getString).orEmpty()
         )
     }
 }
@@ -65,6 +70,7 @@ internal fun AttendanceGate(activity: MainActivity) {
     var checking by remember { mutableStateOf(true) }
     var launching by remember { mutableStateOf(false) }
     var blockedGeneration by rememberSaveable { mutableStateOf<Long?>(null) }
+    var pendingRequestId by rememberSaveable { mutableStateOf<String?>(null) }
     var refreshJob by remember { mutableStateOf<Job?>(null) }
 
     fun refresh() {
@@ -87,19 +93,37 @@ internal fun AttendanceGate(activity: MainActivity) {
     }
     fun openAttendance(tag: Tag? = null) {
         if(launching) return
+        refreshJob?.cancel()
+        checking = false
         // A previous arrival must not reopen the menu after a cancelled/new scan.
         blockedGeneration = maxOf(blockedGeneration ?: 0L, access.generation)
         access = access.copy(state="locked", message="Очікуємо підтвердження нової відмітки від сервера.")
         launching = true
+        var callback: PendingIntent? = null
         try {
-            val intent = Intent(ATTENDANCE_ACTION).apply {
-                component = ComponentName(ATTENDANCE_PACKAGE, "$ATTENDANCE_PACKAGE.MainActivity")
+            val id = UUID.randomUUID().toString()
+            pendingRequestId = id
+            callback = PendingIntent.getActivity(activity, 0,
+                Intent(activity, MainActivity::class.java).apply {
+                    action = "com.example.mounter.action.ATTENDANCE_RETURN"
+                    data = Uri.parse("mounter-attendance://return/$id")
+                    addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                }, PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE)
+            val intent = activity.packageManager.getLaunchIntentForPackage(ATTENDANCE_PACKAGE)
+                ?: error("Додаток відміток com.example.app не встановлений або не має екрана запуску.")
+            intent.apply {
+                action = ATTENDANCE_ACTION
+                // Keep the result relationship: launch intents normally contain NEW_TASK.
+                flags = 0
+                putExtra(RETURN_CALLBACK, callback)
+                putExtra(REQUEST_ID, id)
                 tag?.let { putExtra(NfcAdapter.EXTRA_TAG, it) }
             }
             launcher.launch(intent)
-        } catch(_: Exception) {
+        } catch(error: Exception) {
+            callback?.cancel()
             launching = false
-            access = access.copy(state="locked", eventId="", message="Не вдалося відкрити додаток відміток. Перевірте, чи він установлений.")
+            access = access.copy(state="locked", eventId="", message=error.message ?: "Не вдалося відкрити додаток відміток.")
         }
     }
     val currentOpen by rememberUpdatedState<(Tag) -> Unit>({ openAttendance(it) })
@@ -124,7 +148,8 @@ internal fun AttendanceGate(activity: MainActivity) {
             refreshJob?.cancel()
         }
     }
-    val allowed = access.allowed && (blockedGeneration == null || access.generation > blockedGeneration!!)
+    val allowed = access.allowed && (blockedGeneration == null || access.generation > blockedGeneration!!) &&
+        (pendingRequestId == null || access.requestId == pendingRequestId)
     Box(Modifier.fillMaxSize()) {
         if(allowed) MounterApp()
         if(!allowed || checking) {
@@ -137,7 +162,7 @@ internal fun AttendanceGate(activity: MainActivity) {
                         Text("Відмітка перед початком роботи", style=MaterialTheme.typography.headlineSmall)
                         Text(if(checking) "Перевіряємо відмітку…" else access.message)
                         if(checking) LinearProgressIndicator(Modifier.fillMaxWidth())
-                        Button(enabled=!checking && !launching, onClick={ openAttendance() }) {
+                        Button(enabled=!launching, onClick={ openAttendance() }) {
                             Text("Відкрити додаток відміток")
                         }
                         TextButton(enabled=!checking, onClick={ refresh() }) { Text("Перевірити відмітку") }

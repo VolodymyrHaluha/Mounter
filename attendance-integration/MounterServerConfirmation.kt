@@ -23,6 +23,17 @@ internal fun confirmedMounterAction(json: JSONObject?, eventId: String): String?
     return json.optString("server_action").takeIf { it == "check_in" || it == "check_out" }
 }
 
+internal fun mounterUploadAction(record: AttendanceRecord, server: ServerKind, payload: JSONObject?): String? {
+    if(server != ServerKind.LOCAL || record.action != "NFC") return null
+    // The existing POST already returns a confirmed action, so an absent lookup
+    // endpoint must not prevent immediate return after a valid LOCAL response.
+    confirmedMounterAction(payload, record.externalUuid)?.let { return it }
+    return runCatching {
+        fetchMounterAction(MounterConfirmationRequest(record.externalUuid,
+            record.deviceName, record.deviceModel, record.bluetoothName.orEmpty()))
+    }.getOrNull()
+}
+
 /** LOCAL owns the final action; GLOBAL may still have an unresolved/pending identity. */
 internal fun fetchMounterAction(request: MounterConfirmationRequest): String? {
     val id = runCatching { UUID.fromString(request.eventId).toString() }.getOrNull() ?: return null
