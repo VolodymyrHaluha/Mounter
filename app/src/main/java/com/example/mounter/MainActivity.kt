@@ -56,7 +56,6 @@ private val Mint = Color(0xCC214B3D)
 private val Surface = Color(0xCC16261F)
 private val SolidSurface = Color(0xFF16261F)
 private val CanvasColor = Color(0xFF17261F)
-private val Orange = Color(0xFFF0A442)
 private val Red = Color(0xFFD96C67)
 private val Border = Color(0xFF537265)
 
@@ -65,20 +64,19 @@ data class WorkBlock(
     val id: String = UUID.randomUUID().toString(),
     val photos: List<PhotoEntry> = emptyList(),
     val name: String = "",
-    val note: String = ""
+    val note: String = "",
+    val characteristics: String = ""
 )
 data class Project(
     val name: String, val customer: String,
     val id: String = UUID.randomUUID().toString(),
-    val status: WorkStatus = WorkStatus.TODO,
     val blocks: List<WorkBlock> = listOf(WorkBlock()),
     val customerId: String? = null
 ) {
     // Keep the old name field readable for previously saved objects.
     val displayName: String get() = customer.ifBlank { name }
 }
-enum class WorkStatus { DONE, IN_PROGRESS, CANCELLED, TODO }
-enum class Screen { HOME, OBJECTS, TEAM, PROFILE, OBJECT_DETAIL }
+enum class Screen { HOME, OBJECTS, TEAM, OBJECT_DETAIL }
 
 private class ProjectStore(private val context: Context) {
     private val file get() = File(context.filesDir, "objects.json")
@@ -89,7 +87,7 @@ private class ProjectStore(private val context: Context) {
             val p = data.getJSONObject(i)
             val blocks = p.getJSONArray("blocks")
             Project(p.getString("name"), p.getString("customer"), p.getString("id"),
-                WorkStatus.valueOf(p.getString("status")), (0 until blocks.length()).map { j ->
+                blocks = (0 until blocks.length()).map { j ->
                     val b = blocks.getJSONObject(j)
                     val photos = b.getJSONArray("photos")
                     WorkBlock(b.getString("id"), (0 until photos.length()).map { k ->
@@ -99,7 +97,7 @@ private class ProjectStore(private val context: Context) {
                         // Preserve existing per-photo notes as one shared product note.
                         (0 until photos.length()).map {photos.getJSONObject(it).optionalText("note")}
                             .filter {it.isNotBlank()}.distinct().joinToString("\n\n")
-                    })
+                    }, characteristics = b.optionalText("characteristics"))
                 }, customerId = p.optionalText("customer_id").takeIf { it.isNotBlank() })
         }
     }
@@ -110,9 +108,10 @@ private class ProjectStore(private val context: Context) {
             p.blocks.forEach { b ->
                 val photos = JSONArray()
                 b.photos.forEach { photo -> photos.put(JSONObject().put("id", photo.id).put("path", photo.path)) }
-                blocks.put(JSONObject().put("id", b.id).put("name", b.name).put("note", b.note).put("photos", photos))
+                blocks.put(JSONObject().put("id", b.id).put("name", b.name).put("note", b.note)
+                    .put("characteristics", b.characteristics).put("photos", photos))
             }
-            data.put(JSONObject().put("id", p.id).put("name", p.name).put("customer", p.customer).put("status", p.status.name).put("blocks", blocks).put("customer_id", p.customerId ?: JSONObject.NULL))
+            data.put(JSONObject().put("id", p.id).put("name", p.name).put("customer", p.customer).put("blocks", blocks).put("customer_id", p.customerId ?: JSONObject.NULL))
         }
         val temporary = File(context.filesDir, "objects.tmp")
         temporary.writeText(data.toString())
@@ -239,7 +238,6 @@ fun MounterApp() {
                     Screen.OBJECT_DETAIL -> projects.find { it.id == selectedId }?.let { project ->
                         ObjectDetail(project, { screen = Screen.OBJECTS }, { block, photo -> openPhoto(project, block, photo) }, ::update)
                     }
-                    Screen.PROFILE -> ProfileScreen()
                 }
             }
         }
@@ -281,11 +279,6 @@ private fun NavigationRail(active: Screen, onSelect: (Screen) -> Unit) {
             }
             Spacer(Modifier.height(8.dp))
         }
-        Spacer(Modifier.weight(1f))
-        Box(Modifier.size(48.dp).clip(CircleShape).background(Mint).clickable { onSelect(Screen.PROFILE) }, contentAlignment = Alignment.Center) {
-            Text("АК", color = TealDark, fontWeight = FontWeight.Bold)
-        }
-        Spacer(Modifier.height(8.dp)); Text("Андрій", fontSize = 11.sp, color = Ink, fontWeight = FontWeight.SemiBold)
     }
     Box(Modifier.width(1.dp).fillMaxHeight().background(Border))
 }
@@ -313,22 +306,16 @@ private fun PageHeader(title: String, subtitle: String, action: (@Composable () 
 @Composable
 private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (Project) -> Unit, onObjects: () -> Unit, onTeam: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(28.dp, 22.dp, 28.dp, 18.dp)) {
-        PageHeader("Добрий ранок, Андрію!", "Об’єктів: ${projects.size}") {
+        Row(Modifier.fillMaxWidth(), verticalAlignment=Alignment.CenterVertically) {
+            Text("Об’єктів: ${projects.size}", color=Muted, fontSize=13.sp, modifier=Modifier.weight(1f))
             Surface(shape=RoundedCornerShape(13.dp), color=Surface, border=androidx.compose.foundation.BorderStroke(1.dp,Border)) {
                 Text("Дані на пристрої", color=Muted, fontSize=12.sp, modifier=Modifier.padding(14.dp,9.dp))
             }
         }
-        Spacer(Modifier.height(19.dp))
-        Row(Modifier.fillMaxWidth().height(116.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            StatCard("Виконано", projects.count {it.status==WorkStatus.DONE}.toString(), "об’єктів", Teal, Modifier.weight(1f))
-            StatCard("В процесі", projects.count {it.status==WorkStatus.IN_PROGRESS}.toString(), "об’єктів", Orange, Modifier.weight(1f))
-            StatCard("Скасовано", projects.count {it.status==WorkStatus.CANCELLED}.toString(), "об’єктів", Red, Modifier.weight(1f))
-            SurfaceCard(Modifier.weight(1.25f).fillMaxHeight()) { Text("Очікують роботи", color=Muted, fontSize=12.sp); Text(projects.count {it.status==WorkStatus.TODO}.toString(), fontSize=30.sp, fontWeight=FontWeight.Bold) }
-        }
         Spacer(Modifier.height(18.dp))
         Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
             SurfaceCard(Modifier.weight(1.65f).fillMaxHeight()) {
-                SectionTitle("Активні об'єкти", "Всі об'єкти", onObjects)
+                SectionTitle("Об'єкти", "Всі об'єкти", onObjects)
                 Spacer(Modifier.height(10.dp))
                 if (projects.isEmpty()) Text("Додайте об’єкт у вкладці «Об’єкти»",color=Muted)
                 projects.take(2).forEach { ProjectRow(it) { onProject(it) }; if (it != projects.take(2).last()) HorizontalDivider(color=Border) }
@@ -351,13 +338,6 @@ private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (
 
 @Composable private fun SurfaceCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) = Surface(modifier, shape=RoundedCornerShape(20.dp), color=Surface, border=androidx.compose.foundation.BorderStroke(1.dp,Border)) { Column(Modifier.padding(18.dp), content=content) }
 
-@Composable
-private fun StatCard(label:String, value:String, note:String, color:Color, modifier:Modifier) {
-    Surface(modifier.fillMaxHeight(), shape=RoundedCornerShape(18.dp), color=Surface, border=androidx.compose.foundation.BorderStroke(1.dp,Border)) {
-        Column(Modifier.padding(16.dp)) { Row(verticalAlignment=Alignment.CenterVertically){Box(Modifier.size(9.dp).clip(CircleShape).background(color));Spacer(Modifier.width(8.dp));Text(label,color=Muted,fontSize=12.sp,fontWeight=FontWeight.Medium)};Spacer(Modifier.weight(1f));Row(verticalAlignment=Alignment.Bottom){Text(value,fontSize=30.sp,fontWeight=FontWeight.Bold,color=Ink);Spacer(Modifier.width(10.dp));Text(note,color=Muted,fontSize=11.sp,modifier=Modifier.padding(bottom=5.dp))} }
-    }
-}
-
 @Composable private fun SectionTitle(title:String, action:String, click:()->Unit){Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){Text(title,fontWeight=FontWeight.Bold,fontSize=17.sp,modifier=Modifier.weight(1f));Text(action,color=Teal,fontWeight=FontWeight.SemiBold,fontSize=12.sp,modifier=Modifier.clickable(onClick=click).padding(6.dp))}}
 
 @Composable private fun ProjectRow(project: Project, onClick: () -> Unit) {
@@ -366,7 +346,6 @@ private fun StatCard(label:String, value:String, note:String, color:Color, modif
             Text(project.displayName, fontWeight=FontWeight.Bold, fontSize=16.sp)
             Text("Виробів: ${project.blocks.size}", color=Muted, fontSize=12.sp)
         }
-        StatusPill(project.status)
         Text(" ›", fontSize=25.sp, color=Muted)
     }
 }
@@ -441,13 +420,15 @@ private fun ObjectCard(project: Project, modifier: Modifier, onPhoto: (WorkBlock
         Spacer(Modifier.height(6.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment=Alignment.CenterVertically) {
             Text("Виробів: ${project.blocks.size}", color=Muted, fontSize=12.sp, modifier=Modifier.weight(1f))
-            StatusPill(project.status)
         }
         Spacer(Modifier.height(12.dp))
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement=Arrangement.spacedBy(14.dp)) {
             items(project.blocks, key={it.id}) { product ->
                 Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
                     Text(product.name.ifBlank {"Виріб без назви"}, fontWeight=FontWeight.SemiBold, fontSize=13.sp)
+                    Text("Характеристики", fontWeight=FontWeight.SemiBold, fontSize=12.sp)
+                    Text(product.characteristics.ifBlank {"Характеристики ще не додані"},
+                        color=if(product.characteristics.isBlank()) Muted else Ink, fontSize=12.sp)
                     if(product.photos.isEmpty()) {
                         Box(Modifier.fillMaxWidth().height(160.dp).clip(RoundedCornerShape(14.dp))
                             .background(CanvasColor).clickable(onClick=onOpen), contentAlignment=Alignment.Center) {
@@ -531,14 +512,6 @@ private fun ObjectDetail(project: Project, onBack: () -> Unit, onPhoto: (WorkBlo
         Row(verticalAlignment=Alignment.CenterVertically) {
             BackButton(onBack); Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {Text(project.displayName,fontWeight=FontWeight.Bold,fontSize=25.sp);Text("Виробів: ${project.blocks.size}",color=Muted,fontSize=12.sp)}
-            var expanded by remember {mutableStateOf(false)}
-            Box {
-                OutlinedButton(onClick={expanded=true}) {StatusPill(project.status);Text(" ▾")}
-                DropdownMenu(expanded, {expanded=false}) {
-                    WorkStatus.entries.forEach {status -> DropdownMenuItem(text={StatusPill(status)},onClick={onUpdate(project.copy(status=status));expanded=false})}
-                }
-            }
-            Spacer(Modifier.width(12.dp))
             Button(onClick={onUpdate(project.copy(blocks=project.blocks+WorkBlock()))}) {Text("Додати виріб")}
         }
         Spacer(Modifier.height(18.dp))
@@ -619,6 +592,14 @@ private fun ProductBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpda
                 } catch(_: Exception) {pendingPath?.let {File(it).delete()};pendingPath=null;error="Камера недоступна. Додайте фото з галереї."}
             }) {Text("Сфотографувати")}
         }
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value=block.characteristics,
+            onValueChange={text -> update(currentBlock.copy(characteristics=text))},
+            label={Text("Характеристики")},
+            placeholder={Text("Наприклад: розміри, матеріал, колір — у довільній формі")},
+            modifier=Modifier.fillMaxWidth(), minLines=3
+        )
         error?.let {Text(it,color=Red)}
         Spacer(Modifier.height(12.dp))
         if(block.photos.isEmpty()) {
@@ -650,7 +631,7 @@ private fun ProductBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpda
             value=block.note,
             onValueChange={note -> update(currentBlock.copy(note=note))},
             label={Text("Примітка до виробу")},
-            placeholder={Text("Характеристики та опис для всіх фото виробу")},
+            placeholder={Text("Примітка для всіх фото виробу")},
             modifier=Modifier.fillMaxWidth(), minLines=3
         )
     }
@@ -818,14 +799,4 @@ private fun PhotoActionGlyph(delete: Boolean) {
     }
 }
 
-@Composable private fun StatusPill(status:WorkStatus){val data=when(status){WorkStatus.DONE->Triple("Виконано",Mint,TealDark);WorkStatus.IN_PROGRESS->Triple("В процесі",Color(0xFF4A381D),Color(0xFFFFCE88));WorkStatus.CANCELLED->Triple("Скасовано",Color(0xFF492B29),Color(0xFFFFB4AC));WorkStatus.TODO->Triple("Очікує",CanvasColor,Muted)};Box(Modifier.clip(CircleShape).background(data.second).padding(10.dp,6.dp)){Text(data.first,color=data.third,fontSize=10.sp,fontWeight=FontWeight.Bold)}}
-
 @Composable private fun BackButton(onClick:()->Unit){Surface(Modifier.size(42.dp).clickable(onClick=onClick),shape=RoundedCornerShape(12.dp),color=Surface,border=androidx.compose.foundation.BorderStroke(1.dp,Border)){Box(contentAlignment=Alignment.Center){Text("‹",fontSize=28.sp,color=Ink)}}}
-@Composable private fun ProfileScreen() {
-    Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) {
-        SurfaceCard(Modifier.width(380.dp)) {
-            Text("Монтажник",fontWeight=FontWeight.Bold,fontSize=20.sp)
-            Text("Склад бригади обирається у вкладці «Бригада»",color=Muted)
-        }
-    }
-}
