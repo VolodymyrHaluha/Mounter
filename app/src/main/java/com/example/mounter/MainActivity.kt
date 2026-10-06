@@ -76,7 +76,7 @@ data class Project(
     // Keep the old name field readable for previously saved objects.
     val displayName: String get() = customer.ifBlank { name }
 }
-enum class Screen { HOME, OBJECTS, TEAM, PROFILE, OBJECT_DETAIL }
+enum class Screen { HOME, OBJECTS, TEAM, OBJECT_DETAIL }
 
 private class ProjectStore(private val context: Context) {
     private val file get() = File(context.filesDir, "objects.json")
@@ -238,7 +238,6 @@ fun MounterApp() {
                     Screen.OBJECT_DETAIL -> projects.find { it.id == selectedId }?.let { project ->
                         ObjectDetail(project, { screen = Screen.OBJECTS }, { block, photo -> openPhoto(project, block, photo) }, ::update)
                     }
-                    Screen.PROFILE -> ProfileScreen()
                 }
             }
         }
@@ -280,11 +279,6 @@ private fun NavigationRail(active: Screen, onSelect: (Screen) -> Unit) {
             }
             Spacer(Modifier.height(8.dp))
         }
-        Spacer(Modifier.weight(1f))
-        Box(Modifier.size(48.dp).clip(CircleShape).background(Mint).clickable { onSelect(Screen.PROFILE) }, contentAlignment = Alignment.Center) {
-            Text("АК", color = TealDark, fontWeight = FontWeight.Bold)
-        }
-        Spacer(Modifier.height(8.dp)); Text("Андрій", fontSize = 11.sp, color = Ink, fontWeight = FontWeight.SemiBold)
     }
     Box(Modifier.width(1.dp).fillMaxHeight().background(Border))
 }
@@ -312,7 +306,8 @@ private fun PageHeader(title: String, subtitle: String, action: (@Composable () 
 @Composable
 private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (Project) -> Unit, onObjects: () -> Unit, onTeam: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(28.dp, 22.dp, 28.dp, 18.dp)) {
-        PageHeader("Добрий ранок, Андрію!", "Об’єктів: ${projects.size}") {
+        Row(Modifier.fillMaxWidth(), verticalAlignment=Alignment.CenterVertically) {
+            Text("Об’єктів: ${projects.size}", color=Muted, fontSize=13.sp, modifier=Modifier.weight(1f))
             Surface(shape=RoundedCornerShape(13.dp), color=Surface, border=androidx.compose.foundation.BorderStroke(1.dp,Border)) {
                 Text("Дані на пристрої", color=Muted, fontSize=12.sp, modifier=Modifier.padding(14.dp,9.dp))
             }
@@ -805,11 +800,3 @@ private fun PhotoActionGlyph(delete: Boolean) {
 }
 
 @Composable private fun BackButton(onClick:()->Unit){Surface(Modifier.size(42.dp).clickable(onClick=onClick),shape=RoundedCornerShape(12.dp),color=Surface,border=androidx.compose.foundation.BorderStroke(1.dp,Border)){Box(contentAlignment=Alignment.Center){Text("‹",fontSize=28.sp,color=Ink)}}}
-@Composable private fun ProfileScreen() {
-    Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) {
-        SurfaceCard(Modifier.width(380.dp)) {
-            Text("Монтажник",fontWeight=FontWeight.Bold,fontSize=20.sp)
-            Text("Склад бригади обирається у вкладці «Бригада»",color=Muted)
-        }
-    }
-}
