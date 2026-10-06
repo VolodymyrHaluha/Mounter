@@ -3,7 +3,6 @@ package com.example.mounter
 import android.os.Bundle
 import android.content.Context
 import android.graphics.BitmapFactory
-import androidx.core.content.edit
 import androidx.core.content.FileProvider
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
@@ -16,10 +15,6 @@ import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -158,58 +153,44 @@ fun MounterApp() {
     var projects by remember { mutableStateOf(store.load()) }
     val teamStore = remember { TeamStore(context) }
     var teamMembers by remember { mutableStateOf(teamStore.load()) }
-    val latestTeam by rememberUpdatedState(teamMembers)
-    fun saveTeam(members: List<Worker>) {
-        val unique=members.distinctBy { it.id }
-        teamStore.save(unique)
-        teamMembers=unique
-    }
-    val apiPreferences = remember { context.getSharedPreferences("api", Context.MODE_PRIVATE) }
-    var apiUrl by remember { mutableStateOf(apiPreferences.getString("url", DEFAULT_API_URL) ?: DEFAULT_API_URL) }
-    val api = remember(apiUrl) { DirectoryApi(apiUrl) }
-    var databaseStatus by remember { mutableStateOf(DatabaseStatus.CHECKING) }
-    var connectionError by remember { mutableStateOf<String?>(null) }
-    var retry by remember { mutableIntStateOf(0) }
-    var settingsOpen by remember { mutableStateOf(false) }
+    val directoryStore = remember { LocalDirectoryStore(context) }
+    var employees by remember { mutableStateOf(directoryStore.loadWorkers(teamMembers)) }
+    var clients by remember { mutableStateOf(directoryStore.loadClients(projects)) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    var lastPopup by remember { mutableStateOf<String?>(null) }
-    fun apiError(message: String) {
-        databaseStatus=DatabaseStatus.ERROR
-        connectionError=message
-        if(lastPopup!=message) {
-            lastPopup=message
-            scope.launch { snackbar.showSnackbar(message, actionLabel="Закрити") }
-        }
+    fun localError(error: Exception) {
+        scope.launch { snackbar.showSnackbar(error.message ?: "Не вдалося зберегти дані на пристрої.", actionLabel="Закрити") }
     }
-    val lifecycleOwner=LocalLifecycleOwner.current
-    var foreground by remember { mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
-    DisposableEffect(lifecycleOwner) {
-        val observer=LifecycleEventObserver { _, event ->
-            if(event==Lifecycle.Event.ON_START) foreground=true
-            if(event==Lifecycle.Event.ON_STOP) foreground=false
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    fun saveTeam(members: List<Worker>) {
+        try {
+            val unique = members.distinctBy { it.id }.distinctBy { nameKey(it.name) }
+            teamStore.save(unique)
+            teamMembers = unique
+        } catch(error: Exception) { localError(error) }
     }
-    LaunchedEffect(api, retry, foreground) {
-        if(!foreground) return@LaunchedEffect
-        databaseStatus=DatabaseStatus.CHECKING
-        while(true) {
-            try {
-                api.health()
-                val ids=latestTeam.map {it.id}
-                if(ids.isNotEmpty()) {
-                    val refreshed=api.selectedEmployees(ids).associateBy {it.id}
-                    saveTeam(latestTeam.mapNotNull {if(it.id in ids) refreshed[it.id] else it})
-                }
-                databaseStatus=DatabaseStatus.CONNECTED
-                connectionError=null
-                lastPopup=null
-            } catch(error: kotlinx.coroutines.CancellationException) {throw error}
-            catch(error: Exception) {apiError(error.message ?: "Помилка підключення до БД.")}
-            delay(30000)
-        }
+    fun addEmployee(value: String): Worker? {
+        val name = cleanName(value)
+        if(name.isBlank()) return null
+        employees.find { nameKey(it.name) == nameKey(name) }?.let { return it }
+        val worker = Worker(UUID.randomUUID().toString(), name)
+        return try {
+            val updated = employees + worker
+            directoryStore.saveWorkers(updated)
+            employees = updated
+            worker
+        } catch(error: Exception) { localError(error); null }
+    }
+    fun addClient(value: String): Client? {
+        val name = cleanName(value)
+        if(name.isBlank()) return null
+        clients.find { nameKey(it.name) == nameKey(name) }?.let { return it }
+        val client = Client(UUID.randomUUID().toString(), name)
+        return try {
+            val updated = clients + client
+            directoryStore.saveClients(updated)
+            clients = updated
+            client
+        } catch(error: Exception) { localError(error); null }
     }
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -247,14 +228,14 @@ fun MounterApp() {
             NavigationRail(screen) { screen = it }
             AnimatedContent(targetState = screen, label = "screen", modifier = Modifier.weight(1f)) { current ->
                 when (current) {
-                    Screen.HOME -> HomeScreen(projects, teamMembers, api, databaseStatus, { settingsOpen=true }, ::open, { screen = Screen.OBJECTS }, { screen = Screen.TEAM })
-                    Screen.OBJECTS -> ObjectsScreen(projects, api, ::apiError, ::open, ::openPhoto) { project ->
+                    Screen.HOME -> HomeScreen(projects, teamMembers, ::open, { screen = Screen.OBJECTS }, { screen = Screen.TEAM })
+                    Screen.OBJECTS -> ObjectsScreen(projects, clients, ::addClient, ::open, ::openPhoto) { project ->
                         val updated = projects + project
                         store.save(updated)
                         projects = updated
                         open(project)
                     }
-                    Screen.TEAM -> TeamScreen(teamMembers, api, ::apiError, ::saveTeam)
+                    Screen.TEAM -> TeamScreen(teamMembers, employees, ::addEmployee, ::saveTeam)
                     Screen.OBJECT_DETAIL -> projects.find { it.id == selectedId }?.let { project ->
                         ObjectDetail(project, { screen = Screen.OBJECTS }, { block, photo -> openPhoto(project, block, photo) }, ::update)
                     }
@@ -265,23 +246,6 @@ fun MounterApp() {
     }
     Box(Modifier.fillMaxSize(), contentAlignment=Alignment.BottomCenter) {
         SnackbarHost(snackbar, modifier=Modifier.padding(16.dp))
-    }
-    if(settingsOpen) {
-        var address by remember { mutableStateOf(apiUrl) }
-        val uri=android.net.Uri.parse(address.trim())
-        val valid=uri.scheme in listOf("http", "https") && !uri.host.isNullOrBlank() && uri.query==null && uri.fragment==null
-        AlertDialog(onDismissRequest={settingsOpen=false},title={Text("Підключення до БД")},
-            text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(address,{address=it},label={Text("Адреса API")},singleLine=true)
-                connectionError?.let {Text(it,color=Red)}
-            }},
-            confirmButton={TextButton(enabled=valid,onClick={
-                apiUrl=address.trim().trimEnd('/')
-                apiPreferences.edit { putString("url",apiUrl) }
-                lastPopup=null;retry++;settingsOpen=false
-            }) {Text("Підключити")}},
-            dismissButton={TextButton(onClick={settingsOpen=false}) {Text("Закрити")}}
-        )
     }
     photoSelection?.let { selection ->
         val photo = projects.find { it.id == selection[0] }?.blocks
@@ -347,23 +311,11 @@ private fun PageHeader(title: String, subtitle: String, action: (@Composable () 
 }
 
 @Composable
-private fun HomeScreen(projects: List<Project>, team: List<Worker>, api: DirectoryApi, databaseStatus: DatabaseStatus, onConnection: () -> Unit, onProject: (Project) -> Unit, onObjects: () -> Unit, onTeam: () -> Unit) {
+private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (Project) -> Unit, onObjects: () -> Unit, onTeam: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(28.dp, 22.dp, 28.dp, 18.dp)) {
         PageHeader("Добрий ранок, Андрію!", "Об’єктів: ${projects.size}") {
-            Surface(modifier=Modifier.clickable(onClick=onConnection),shape=RoundedCornerShape(13.dp),color=Surface,border=androidx.compose.foundation.BorderStroke(1.dp,Border)) {
-                Row(Modifier.padding(14.dp,9.dp),verticalAlignment=Alignment.CenterVertically) {
-                    Box(Modifier.size(8.dp).clip(CircleShape).background(when(databaseStatus) {
-                        DatabaseStatus.CONNECTED -> Teal
-                        DatabaseStatus.CHECKING -> Orange
-                        DatabaseStatus.ERROR -> Red
-                    }))
-                    Spacer(Modifier.width(8.dp))
-                    Text(when(databaseStatus) {
-                        DatabaseStatus.CONNECTED -> "БД підключено"
-                        DatabaseStatus.CHECKING -> "Підключення до БД…"
-                        DatabaseStatus.ERROR -> "Помилка підключення до БД"
-                    },color=Muted,fontSize=12.sp)
-                }
+            Surface(shape=RoundedCornerShape(13.dp), color=Surface, border=androidx.compose.foundation.BorderStroke(1.dp,Border)) {
+                Text("Дані на пристрої", color=Muted, fontSize=12.sp, modifier=Modifier.padding(14.dp,9.dp))
             }
         }
         Spacer(Modifier.height(19.dp))
@@ -389,7 +341,7 @@ private fun HomeScreen(projects: List<Project>, team: List<Worker>, api: Directo
                     Text("Склад бригади не обрано. Додайте співробітників у вкладці «Бригада».", color=Muted, fontSize=12.sp)
                 } else {
                     LazyColumn(Modifier.weight(1f)) {
-                        items(team, key={it.id}) { WorkerCompact(it, api) }
+                        items(team, key={it.id}) { WorkerCompact(it) }
                     }
                 }
             }
@@ -419,9 +371,9 @@ private fun StatCard(label:String, value:String, note:String, color:Color, modif
     }
 }
 
-@Composable private fun WorkerCompact(worker: Worker, api: DirectoryApi) {
+@Composable private fun WorkerCompact(worker: Worker) {
     Row(Modifier.fillMaxWidth().padding(vertical=6.dp),verticalAlignment=Alignment.CenterVertically) {
-        EmployeeAvatar(worker,api,38)
+        EmployeeAvatar(worker,38)
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Text(worker.name,fontWeight=FontWeight.SemiBold,fontSize=12.sp)
@@ -431,27 +383,15 @@ private fun StatCard(label:String, value:String, note:String, color:Color, modif
 }
 
 @Composable
-private fun ObjectsScreen(projects: List<Project>, api: DirectoryApi, onError: (String) -> Unit, onProject: (Project) -> Unit, onPhoto: (Project, WorkBlock, PhotoEntry) -> Unit, onCreate: (Project) -> Unit) {
+private fun ObjectsScreen(projects: List<Project>, clients: List<Client>, onAddClient: (String) -> Client?, onProject: (Project) -> Unit, onPhoto: (Project, WorkBlock, PhotoEntry) -> Unit, onCreate: (Project) -> Unit) {
     var creating by rememberSaveable { mutableStateOf(false) }
     var customer by rememberSaveable { mutableStateOf("") }
-    var chosenClient by remember { mutableStateOf<Client?>(null) }
-    var clients by remember { mutableStateOf<List<Client>>(emptyList()) }
-    var searching by remember { mutableStateOf(false) }
-    var searchError by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(customer,creating,api) {
-        clients=emptyList();searchError=null
-        if(!creating) return@LaunchedEffect
-        searching=true
-        try {
-            delay(300)
-            clients=api.clients(customer)
-        } catch(error: kotlinx.coroutines.CancellationException) {throw error}
-        catch(error: Exception) {searchError=error.message ?: "Помилка пошуку замовника.";onError(searchError!!)}
-        finally {searching=false}
-    }
+    var chosenClientId by rememberSaveable { mutableStateOf<String?>(null) }
+    val chosenClient = clients.find { it.id == chosenClientId }
+    val matches = clients.filter { nameKey(it.name).contains(nameKey(customer)) }
     Column(Modifier.fillMaxSize().padding(28.dp,22.dp)) {
         PageHeader("Об'єкти", "${projects.size} об'єктів • фото та примітки") {
-            Button(onClick={ customer="";chosenClient=null;creating=true }) { Text("Створити об'єкт") }
+            Button(onClick={ customer="";chosenClientId=null;creating=true }) { Text("Створити об'єкт") }
         }
         Spacer(Modifier.height(20.dp))
         if (projects.isEmpty()) Text("Створіть перший об'єкт: вкажіть замовника.", color=Muted)
@@ -467,16 +407,19 @@ private fun ObjectsScreen(projects: List<Project>, api: DirectoryApi, onError: (
     if (creating) AlertDialog(
         onDismissRequest={creating=false}, title={Text("Новий об'єкт")},
         text={ Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
-            OutlinedTextField(customer, {customer=it;chosenClient=null}, label={Text("Замовник")}, singleLine=true)
-            if(chosenClient!=null) Text("Обрано: ${chosenClient!!.name}",color=Teal)
+            OutlinedTextField(customer, {customer=it;chosenClientId=null}, label={Text("Замовник")}, singleLine=true)
+            if(chosenClient!=null) Text("Обрано: ${chosenClient.name}",color=Teal)
             else {
-                if(searching) LinearProgressIndicator(Modifier.fillMaxWidth())
-                searchError?.let {Text(it,color=Red)}
-                if(!searching && clients.isEmpty() && searchError==null) Text("Замовників не знайдено",color=Muted)
+                if(matches.isEmpty()) {
+                    Text("Замовників не знайдено",color=Muted)
+                    if(cleanName(customer).isNotBlank()) TextButton(onClick={
+                        onAddClient(customer)?.let { client -> chosenClientId=client.id; customer=client.name }
+                    }) {Text("Додати замовника")}
+                }
                 LazyColumn(Modifier.heightIn(max=220.dp)) {
-                    items(clients,key={it.id}) {client ->
+                    items(matches,key={it.id}) {client ->
                         Text(client.name,modifier=Modifier.fillMaxWidth().clickable {
-                            chosenClient=client;customer=client.name
+                            chosenClientId=client.id;customer=client.name
                         }.padding(vertical=12.dp))
                     }
                 }
@@ -484,7 +427,7 @@ private fun ObjectsScreen(projects: List<Project>, api: DirectoryApi, onError: (
         } },
         confirmButton={ TextButton(enabled=chosenClient!=null, onClick={
             chosenClient?.let {client -> onCreate(Project(name=client.name,customer=client.name,customerId=client.id))}
-            customer="";chosenClient=null;creating=false
+            customer="";chosenClientId=null;creating=false
         }) {Text("Створити")} },
         dismissButton={TextButton(onClick={creating=false}) {Text("Скасувати")}}
     )
@@ -527,23 +470,10 @@ private fun ObjectCard(project: Project, modifier: Modifier, onPhoto: (WorkBlock
 }
 
 @Composable
-private fun TeamScreen(members: List<Worker>, api: DirectoryApi, onError: (String) -> Unit, onSave: (List<Worker>) -> Unit) {
+private fun TeamScreen(members: List<Worker>, employees: List<Worker>, onAddEmployee: (String) -> Worker?, onSave: (List<Worker>) -> Unit) {
     var query by rememberSaveable {mutableStateOf("")}
-    var results by remember {mutableStateOf<List<Worker>>(emptyList())}
-    var searching by remember {mutableStateOf(false)}
-    var searchError by remember {mutableStateOf<String?>(null)}
-    LaunchedEffect(query,api) {
-        results=emptyList();searchError=null
-        if(query.isBlank()) {searching=false;return@LaunchedEffect}
-        searching=true
-        try {
-            delay(300)
-            results=api.employees(query.trim())
-        } catch(error: kotlinx.coroutines.CancellationException) {throw error}
-        catch(error: Exception) {searchError=error.message ?: "Помилка пошуку співробітників.";onError(searchError!!)}
-        finally {searching=false}
-    }
-    val available=results.filterNot {result -> members.any {it.id==result.id}}
+    val matches = if(query.isBlank()) emptyList() else employees.filter { nameKey(it.name).contains(nameKey(query)) }
+    val available = matches.filterNot { result -> members.any { it.id == result.id } }
     Column(Modifier.fillMaxSize().padding(28.dp,22.dp)) {
         PageHeader("Моя бригада", "У складі: ${members.size} • зміни зберігаються автоматично")
         Spacer(Modifier.height(16.dp))
@@ -554,21 +484,27 @@ private fun TeamScreen(members: List<Worker>, api: DirectoryApi, onError: (Strin
                 if(query.isNotBlank()) {
                     item {
                         Text("Результати пошуку",fontWeight=FontWeight.Bold)
-                        if(searching) LinearProgressIndicator(Modifier.fillMaxWidth())
-                        searchError?.let {Text(it,color=Red)}
-                        if(!searching && available.isEmpty() && searchError==null) Text("Нових співробітників не знайдено",color=Muted)
+                        if(matches.isEmpty()) {
+                            Text("Співробітника не знайдено",color=Muted)
+                            TextButton(onClick={
+                                onAddEmployee(query)?.let { worker ->
+                                    onSave(members + worker)
+                                    query=""
+                                }
+                            }) {Text("Додати співробітника")}
+                        } else if(available.isEmpty()) Text("Співробітники вже у складі бригади",color=Muted)
                     }
                     items(available,key={"result-${it.id}"}) {worker ->
-                        EmployeeChoice(worker,api,false) {checked -> if(checked) onSave((members+worker).distinctBy {it.id})}
+                        EmployeeChoice(worker,false) {checked -> if(checked) onSave(members+worker)}
                     }
                 }
                 item {
                     Spacer(Modifier.height(16.dp))
                     Text("Обрані співробітники",fontWeight=FontWeight.Bold)
-                    if(members.isEmpty()) Text("Знайдіть співробітника та позначте checkbox, щоб додати до бригади.",color=Muted)
+                    if(members.isEmpty()) Text("Знайдіть співробітника або введіть ПІБ, щоб додати нового.",color=Muted)
                 }
                 items(members,key={"selected-${it.id}"}) {worker ->
-                    EmployeeChoice(worker,api,true) {checked -> if(!checked) onSave(members.filterNot {it.id==worker.id})}
+                    EmployeeChoice(worker,true) {checked -> if(!checked) onSave(members.filterNot {it.id==worker.id})}
                 }
             }
         }
@@ -576,9 +512,9 @@ private fun TeamScreen(members: List<Worker>, api: DirectoryApi, onError: (Strin
 }
 
 @Composable
-private fun EmployeeChoice(worker: Worker, api: DirectoryApi, checked: Boolean, onChecked: (Boolean) -> Unit) {
+private fun EmployeeChoice(worker: Worker, checked: Boolean, onChecked: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth().clickable {onChecked(!checked)}.padding(vertical=9.dp),verticalAlignment=Alignment.CenterVertically) {
-        EmployeeAvatar(worker,api,46)
+        EmployeeAvatar(worker,46)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(worker.name,fontWeight=FontWeight.SemiBold)
