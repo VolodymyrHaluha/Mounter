@@ -45,6 +45,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 
 private val Ink = Color(0xFFF0F6F3)
 private val Muted = Color(0xFFC0D1C9)
@@ -166,12 +170,29 @@ fun MounterApp() {
     }
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
+    var photoSelection by rememberSaveable { mutableStateOf<List<String>?>(null) }
     fun update(project: Project) {
         val updated = projects.map { if (it.id == project.id) project else it }
         store.save(updated)
         projects = updated
     }
     fun open(project: Project) { selectedId = project.id; screen = Screen.OBJECT_DETAIL }
+    fun openPhoto(project: Project, block: WorkBlock, photo: PhotoEntry) {
+        photoSelection = listOf(project.id, block.id, photo.id)
+    }
+    fun changePhoto(newPath: String?) {
+        val selection = checkNotNull(photoSelection)
+        val project = checkNotNull(projects.find { it.id == selection[0] })
+        val block = checkNotNull(project.blocks.find { it.id == selection[1] })
+        val oldPhoto = checkNotNull(block.photos.find { it.id == selection[2] })
+        val photos = if (newPath == null) block.photos.filterNot { it.id == oldPhoto.id }
+            else block.photos.map { if (it.id == oldPhoto.id) it.copy(path = newPath) else it }
+        update(project.copy(blocks = project.blocks.map { if (it.id == block.id) it.copy(photos = photos) else it }))
+        // Remove the old file only after the changed object has been saved.
+        val stillUsed = projects.any { p -> p.blocks.any { b -> b.photos.any { it.path == oldPhoto.path } } }
+        if (!stillUsed) runCatching { File(oldPhoto.path).delete() }
+        if (newPath == null) photoSelection = null
+    }
     Box(Modifier.fillMaxSize().background(CanvasColor)) {
         Image(
             painter = painterResource(R.drawable.frop_logo_preview_01_1),
@@ -184,7 +205,7 @@ fun MounterApp() {
             AnimatedContent(targetState = screen, label = "screen", modifier = Modifier.weight(1f)) { current ->
                 when (current) {
                     Screen.HOME -> HomeScreen(projects, teamMembers.map { workers[it] }, ::open, { screen = Screen.OBJECTS }, { screen = Screen.TEAM })
-                    Screen.OBJECTS -> ObjectsScreen(projects, ::open) { project ->
+                    Screen.OBJECTS -> ObjectsScreen(projects, ::open, ::openPhoto) { project ->
                         val updated = projects + project
                         store.save(updated)
                         projects = updated
@@ -192,11 +213,19 @@ fun MounterApp() {
                     }
                     Screen.TEAM -> TeamScreen(teamMembers, ::saveTeam)
                     Screen.OBJECT_DETAIL -> projects.find { it.id == selectedId }?.let { project ->
-                        ObjectDetail(project, { screen = Screen.OBJECTS }, ::update)
+                        ObjectDetail(project, { screen = Screen.OBJECTS }, { block, photo -> openPhoto(project, block, photo) }, ::update)
                     }
                     Screen.PROFILE -> ProfileScreen()
                 }
             }
+        }
+    }
+    photoSelection?.let { selection ->
+        val photo = projects.find { it.id == selection[0] }?.blocks
+            ?.find { it.id == selection[1] }?.photos?.find { it.id == selection[2] }
+        if (photo != null) key(selection) {
+            PhotoViewer(photo, onClose = { photoSelection = null },
+                onReplace = { changePhoto(it) }, onDelete = { changePhoto(null) })
         }
     }
 }
@@ -320,7 +349,7 @@ private fun StatCard(label:String, value:String, note:String, color:Color, modif
 @Composable private fun ProductSketch(color:Color,modifier:Modifier=Modifier){Canvas(modifier.padding(10.dp)){drawRoundRect(color.copy(alpha=.28f),Offset(size.width*.12f,size.height*.12f),Size(size.width*.76f,size.height*.76f),cornerRadius=androidx.compose.ui.geometry.CornerRadius(5f));drawRect(color,Offset(size.width*.2f,size.height*.24f),Size(size.width*.6f,size.height*.58f));drawLine(Color.White.copy(alpha=.7f),Offset(size.width*.5f,size.height*.25f),Offset(size.width*.5f,size.height*.81f),2f);drawCircle(Color.White,size.width*.025f,Offset(size.width*.46f,size.height*.52f));drawCircle(Color.White,size.width*.025f,Offset(size.width*.54f,size.height*.52f))}}
 
 @Composable
-private fun ObjectsScreen(projects: List<Project>, onProject: (Project) -> Unit, onCreate: (Project) -> Unit) {
+private fun ObjectsScreen(projects: List<Project>, onProject: (Project) -> Unit, onPhoto: (Project, WorkBlock, PhotoEntry) -> Unit, onCreate: (Project) -> Unit) {
     var creating by rememberSaveable { mutableStateOf(false) }
     var customer by rememberSaveable { mutableStateOf("") }
     Column(Modifier.fillMaxSize().padding(28.dp,22.dp)) {
@@ -334,7 +363,7 @@ private fun ObjectsScreen(projects: List<Project>, onProject: (Project) -> Unit,
             horizontalArrangement=Arrangement.spacedBy(16.dp)
         ) {
             items(projects, key={it.id}) { project ->
-                ObjectCard(project, Modifier.width(290.dp).fillParentMaxHeight()) { onProject(project) }
+                ObjectCard(project, Modifier.width(290.dp).fillParentMaxHeight(), { block, photo -> onPhoto(project, block, photo) }) { onProject(project) }
             }
         }
     }
@@ -350,8 +379,8 @@ private fun ObjectsScreen(projects: List<Project>, onProject: (Project) -> Unit,
 }
 
 @Composable
-private fun ObjectCard(project: Project, modifier: Modifier, onOpen: () -> Unit) {
-    val photos=project.blocks.flatMap { block -> block.photos.map { block.name to it } }
+private fun ObjectCard(project: Project, modifier: Modifier, onPhoto: (WorkBlock, PhotoEntry) -> Unit, onOpen: () -> Unit) {
+    val photos=project.blocks.flatMap { block -> block.photos.map { block to it } }
     SurfaceCard(modifier) {
         Text(project.displayName, fontWeight=FontWeight.Bold, fontSize=18.sp,
             modifier=Modifier.fillMaxWidth().clickable(onClick=onOpen))
@@ -370,13 +399,13 @@ private fun ObjectCard(project: Project, modifier: Modifier, onOpen: () -> Unit)
                     }
                 }
             }
-            items(photos, key={it.second.id}) { (blockName, photo) ->
+            items(photos, key={it.second.id}) { (block, photo) ->
                 Column {
-                    if (blockName.isNotBlank()) {
-                        Text(blockName, fontWeight=FontWeight.SemiBold, fontSize=13.sp)
+                    if (block.name.isNotBlank()) {
+                        Text(block.name, fontWeight=FontWeight.SemiBold, fontSize=13.sp)
                         Spacer(Modifier.height(6.dp))
                     }
-                    Box(Modifier.clickable(onClick=onOpen)) { PhotoPreview(photo.path, height=160.dp) }
+                    Box(Modifier.clickable { onPhoto(block, photo) }) { PhotoPreview(photo.path, height=160.dp) }
                     Spacer(Modifier.height(8.dp))
                     Text(photo.note.ifBlank { "Примітки ще не додані" },
                         color=if(photo.note.isBlank()) Muted else Ink, fontSize=12.sp)
@@ -415,7 +444,7 @@ private fun TeamScreen(members: List<Int>, onSave: (List<Int>) -> Unit) {
 }
 
 @Composable
-private fun ObjectDetail(project: Project, onBack: () -> Unit, onUpdate: (Project) -> Unit) {
+private fun ObjectDetail(project: Project, onBack: () -> Unit, onPhoto: (WorkBlock, PhotoEntry) -> Unit, onUpdate: (Project) -> Unit) {
     Column(Modifier.fillMaxSize().padding(28.dp,20.dp)) {
         Row(verticalAlignment=Alignment.CenterVertically) {
             BackButton(onBack); Spacer(Modifier.width(14.dp))
@@ -433,7 +462,7 @@ private fun ObjectDetail(project: Project, onBack: () -> Unit, onUpdate: (Projec
         Spacer(Modifier.height(18.dp))
         LazyColumn(verticalArrangement=Arrangement.spacedBy(18.dp)) {
             items(project.blocks, key={it.id}) { block ->
-                PhotoBlock(block) { updated ->
+                PhotoBlock(block, { photo -> onPhoto(block, photo) }) { updated ->
                     onUpdate(project.copy(blocks=project.blocks.map {if(it.id==block.id)updated else it}))
                 }
             }
@@ -442,7 +471,7 @@ private fun ObjectDetail(project: Project, onBack: () -> Unit, onUpdate: (Projec
 }
 
 @Composable
-private fun PhotoBlock(block: WorkBlock, onUpdate: (WorkBlock) -> Unit) {
+private fun PhotoBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpdate: (WorkBlock) -> Unit) {
     val context=LocalContext.current
     val currentBlock by rememberUpdatedState(block)
     val update by rememberUpdatedState(onUpdate)
@@ -530,7 +559,7 @@ private fun PhotoBlock(block: WorkBlock, onUpdate: (WorkBlock) -> Unit) {
                 rowPhotos.forEach {photo ->
                     key(photo.id) {
                         Column(Modifier.weight(1f)) {
-                            PhotoPreview(photo.path, height=200.dp)
+                            Box(Modifier.clickable { onPhoto(photo) }) { PhotoPreview(photo.path, height=200.dp) }
                             Spacer(Modifier.height(8.dp))
                             OutlinedTextField(
                                 value=photo.note,
@@ -550,19 +579,163 @@ private fun PhotoBlock(block: WorkBlock, onUpdate: (WorkBlock) -> Unit) {
 
 @Composable
 private fun PhotoPreview(path: String, height: androidx.compose.ui.unit.Dp = 260.dp) {
+    PhotoImage(path, Modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(14.dp)).background(CanvasColor))
+}
+
+@Composable
+private fun PhotoImage(path: String, modifier: Modifier, maxDimension: Int = 1600) {
     var bitmap by remember(path) {mutableStateOf<android.graphics.Bitmap?>(null)}
-    LaunchedEffect(path) {
+    var failed by remember(path) {mutableStateOf(false)}
+    LaunchedEffect(path, maxDimension) {
         bitmap=kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val bounds=BitmapFactory.Options().apply {inJustDecodeBounds=true}
+                BitmapFactory.decodeFile(path,bounds)
+                var sample=1
+                while(bounds.outWidth/sample>maxDimension || bounds.outHeight/sample>maxDimension) sample*=2
+                BitmapFactory.decodeFile(path,BitmapFactory.Options().apply {inSampleSize=sample})
+            }.getOrNull()
+        }
+        failed=bitmap==null
+    }
+    Box(modifier,contentAlignment=Alignment.Center) {
+        bitmap?.let {Image(it.asImageBitmap(),contentDescription="Фото об'єкта",modifier=Modifier.fillMaxSize(),contentScale=ContentScale.Fit)}
+            ?: Text(if(failed) "Не вдалося відкрити фото" else "Завантаження фото…",color=Muted)
+    }
+}
+
+@Composable
+private fun PhotoViewer(photo: PhotoEntry, onClose: () -> Unit, onReplace: (String) -> Unit, onDelete: () -> Unit) {
+    val context=LocalContext.current
+    val scope=rememberCoroutineScope()
+    val replace by rememberUpdatedState(onReplace)
+    var pendingPath by rememberSaveable {mutableStateOf<String?>(null)}
+    var busy by remember {mutableStateOf(pendingPath!=null)}
+    var error by remember {mutableStateOf<String?>(null)}
+    var chooseSource by remember {mutableStateOf(false)}
+    fun acceptReplacement(path: String) {
+        try {
             val bounds=BitmapFactory.Options().apply {inJustDecodeBounds=true}
             BitmapFactory.decodeFile(path,bounds)
-            var sample=1
-            while(bounds.outWidth/sample>1600 || bounds.outHeight/sample>1600) sample*=2
-            BitmapFactory.decodeFile(path,BitmapFactory.Options().apply {inSampleSize=sample})
+            check(bounds.outWidth>0 && bounds.outHeight>0)
+            replace(path)
+            error=null
+        } catch(e: Exception) {
+            File(path).delete()
+            error="Не вдалося замінити фото. Спробуйте ще раз."
         }
     }
-    Box(Modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(14.dp)).background(CanvasColor),contentAlignment=Alignment.Center) {
-        bitmap?.let {Image(it.asImageBitmap(),contentDescription="Фото об'єкта",modifier=Modifier.fillMaxSize(),contentScale=ContentScale.Fit)}
-            ?: Text("Завантаження фото…",color=Muted)
+    val camera=rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        pendingPath?.let {path -> if(success) acceptReplacement(path) else File(path).delete()}
+        pendingPath=null
+        busy=false
+    }
+    val gallery=rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if(uri!=null) {
+            busy=true
+            error=null
+            scope.launch {
+                var copiedPath: String? = null
+                var committed=false
+                try {
+                    val file=File(context.filesDir,"photos/${UUID.randomUUID()}.jpg")
+                    copiedPath=file.absolutePath
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        file.parentFile?.mkdirs()
+                        try {
+                            context.contentResolver.openInputStream(uri)?.use {input ->
+                                file.outputStream().use {output -> input.copyTo(output)}
+                            } ?: error("Фото недоступне")
+                            val bounds=BitmapFactory.Options().apply {inJustDecodeBounds=true}
+                            BitmapFactory.decodeFile(file.absolutePath,bounds)
+                            check(bounds.outWidth>0 && bounds.outHeight>0)
+                            file.absolutePath
+                        } catch(e: Exception) {file.delete();throw e}
+                    }
+                    replace(checkNotNull(copiedPath))
+                    committed=true
+                } catch(e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch(e: Exception) {
+                    error="Не вдалося замінити фото. Спробуйте ще раз."
+                } finally {
+                    if(!committed) copiedPath?.let {File(it).delete()}
+                    busy=false
+                }
+            }
+        }
+    }
+    Dialog(onDismissRequest={if(!busy) onClose()}, properties=DialogProperties(
+        usePlatformDefaultWidth=false, decorFitsSystemWindows=false,
+        dismissOnBackPress=!busy, dismissOnClickOutside=false
+    )) {
+        Box(Modifier.fillMaxSize().background(Color.Black).systemBarsPadding()) {
+            PhotoImage(photo.path, Modifier.fillMaxSize(), maxDimension=3200)
+            IconButton(onClick=onClose, enabled=!busy,
+                modifier=Modifier.align(Alignment.TopStart).padding(12.dp).background(Color.Black.copy(alpha=.7f),CircleShape)
+                    .semantics {contentDescription="Закрити фото"}) {
+                Canvas(Modifier.size(22.dp)) {
+                    drawLine(Color.White,Offset(size.width*.2f,size.height*.2f),Offset(size.width*.8f,size.height*.8f),3.dp.toPx(),StrokeCap.Round)
+                    drawLine(Color.White,Offset(size.width*.8f,size.height*.2f),Offset(size.width*.2f,size.height*.8f),3.dp.toPx(),StrokeCap.Round)
+                }
+            }
+            Row(Modifier.align(Alignment.TopEnd).padding(12.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                Box {
+                    IconButton(onClick={chooseSource=true},enabled=!busy,
+                        modifier=Modifier.background(Color.Black.copy(alpha=.7f),CircleShape).semantics {contentDescription="Змінити фото"}) {
+                        PhotoActionGlyph(delete=false)
+                    }
+                    DropdownMenu(chooseSource,{chooseSource=false}) {
+                        DropdownMenuItem(text={Text("Вибрати з галереї")},onClick={chooseSource=false;gallery.launch("image/*")})
+                        DropdownMenuItem(text={Text("Сфотографувати")},onClick={
+                            chooseSource=false
+                            try {
+                                val file=File(context.filesDir,"photos/${UUID.randomUUID()}.jpg").also {it.parentFile?.mkdirs();it.createNewFile()}
+                                pendingPath=file.absolutePath
+                                busy=true
+                                camera.launch(FileProvider.getUriForFile(context,"${context.packageName}.photos",file))
+                            } catch(e: Exception) {
+                                pendingPath?.let {File(it).delete()};pendingPath=null;busy=false
+                                error="Камера недоступна. Виберіть фото з галереї."
+                            }
+                        })
+                    }
+                }
+                IconButton(onClick={
+                    try {onDelete()} catch(e: Exception) {error="Не вдалося видалити фото. Спробуйте ще раз."}
+                },enabled=!busy,modifier=Modifier.background(Color.Black.copy(alpha=.7f),CircleShape)
+                    .semantics {contentDescription="Видалити фото"}) {
+                    PhotoActionGlyph(delete=true)
+                }
+            }
+            if(busy) CircularProgressIndicator(Modifier.align(Alignment.Center))
+            error?.let {Text(it,color=Red,modifier=Modifier.align(Alignment.BottomCenter).padding(16.dp)
+                .background(Color.Black.copy(alpha=.8f),RoundedCornerShape(12.dp)).padding(12.dp))}
+        }
+    }
+}
+
+@Composable
+private fun PhotoActionGlyph(delete: Boolean) {
+    Canvas(Modifier.size(24.dp)) {
+        val w=size.width
+        val h=size.height
+        val stroke=Stroke(width=2.dp.toPx(),cap=StrokeCap.Round)
+        if(delete) {
+            drawLine(Color.White,Offset(w*.18f,h*.25f),Offset(w*.82f,h*.25f),stroke.width,StrokeCap.Round)
+            drawLine(Color.White,Offset(w*.38f,h*.12f),Offset(w*.62f,h*.12f),stroke.width,StrokeCap.Round)
+            val outline=Path().apply {moveTo(w*.28f,h*.32f);lineTo(w*.32f,h*.85f);lineTo(w*.68f,h*.85f);lineTo(w*.72f,h*.32f)}
+            drawPath(outline,Color.White,style=stroke)
+            drawLine(Color.White,Offset(w*.43f,h*.42f),Offset(w*.44f,h*.73f),stroke.width,StrokeCap.Round)
+            drawLine(Color.White,Offset(w*.57f,h*.42f),Offset(w*.56f,h*.73f),stroke.width,StrokeCap.Round)
+        } else {
+            val pencil=Path().apply {
+                moveTo(w*.2f,h*.8f);lineTo(w*.25f,h*.59f);lineTo(w*.68f,h*.16f)
+                lineTo(w*.84f,h*.32f);lineTo(w*.41f,h*.75f);close()
+            }
+            drawPath(pencil,Color.White,style=stroke)
+            drawLine(Color.White,Offset(w*.59f,h*.25f),Offset(w*.75f,h*.41f),stroke.width,StrokeCap.Round)
+        }
     }
 }
 
