@@ -58,7 +58,11 @@ private val Red = Color(0xFFD96C67)
 private val Border = Color(0xFF537265)
 
 data class PhotoEntry(val path: String, val note: String = "", val id: String = UUID.randomUUID().toString())
-data class WorkBlock(val id: String = UUID.randomUUID().toString(), val photos: List<PhotoEntry> = emptyList())
+data class WorkBlock(
+    val id: String = UUID.randomUUID().toString(),
+    val photos: List<PhotoEntry> = emptyList(),
+    val name: String = ""
+)
 data class Project(
     val name: String, val customer: String,
     val id: String = UUID.randomUUID().toString(),
@@ -84,7 +88,7 @@ private class ProjectStore(private val context: Context) {
                     WorkBlock(b.getString("id"), (0 until photos.length()).map { k ->
                         val photo = photos.getJSONObject(k)
                         PhotoEntry(photo.getString("path"), photo.getString("note"), photo.getString("id"))
-                    })
+                    }, name = b.optString("name", ""))
                 })
         }
     }
@@ -95,7 +99,7 @@ private class ProjectStore(private val context: Context) {
             p.blocks.forEach { b ->
                 val photos = JSONArray()
                 b.photos.forEach { photo -> photos.put(JSONObject().put("id", photo.id).put("path", photo.path).put("note", photo.note)) }
-                blocks.put(JSONObject().put("id", b.id).put("photos", photos))
+                blocks.put(JSONObject().put("id", b.id).put("name", b.name).put("photos", photos))
             }
             data.put(JSONObject().put("id", p.id).put("name", p.name).put("customer", p.customer).put("status", p.status.name).put("blocks", blocks))
         }
@@ -144,6 +148,18 @@ fun MounterApp() {
     val context = LocalContext.current
     val store = remember { ProjectStore(context) }
     var projects by remember { mutableStateOf(store.load()) }
+    val teamPreferences = remember { context.getSharedPreferences("team", Context.MODE_PRIVATE) }
+    var teamMembers by remember {
+        mutableStateOf(
+            teamPreferences.getStringSet("members", setOf("0", "1", "2", "3"))
+                .orEmpty().mapNotNull { it.toIntOrNull() }
+                .filter { it in workers.indices }.sorted()
+        )
+    }
+    fun saveTeam(members: List<Int>) {
+        teamPreferences.edit().putStringSet("members", members.map { it.toString() }.toSet()).apply()
+        teamMembers = members.sorted()
+    }
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     fun update(project: Project) {
@@ -163,14 +179,14 @@ fun MounterApp() {
             NavigationRail(screen) { screen = it }
             AnimatedContent(targetState = screen, label = "screen", modifier = Modifier.weight(1f)) { current ->
                 when (current) {
-                    Screen.HOME -> HomeScreen(projects, ::open, { screen = Screen.OBJECTS }, { screen = Screen.TEAM })
+                    Screen.HOME -> HomeScreen(projects, teamMembers.map { workers[it] }, ::open, { screen = Screen.OBJECTS }, { screen = Screen.TEAM })
                     Screen.OBJECTS -> ObjectsScreen(projects, ::open) { project ->
                         val updated = projects + project
                         store.save(updated)
                         projects = updated
                         open(project)
                     }
-                    Screen.TEAM -> TeamScreen()
+                    Screen.TEAM -> TeamScreen(teamMembers, ::saveTeam)
                     Screen.OBJECT_DETAIL -> projects.find { it.id == selectedId }?.let { project ->
                         ObjectDetail(project, { screen = Screen.OBJECTS }, ::update)
                     }
@@ -235,7 +251,7 @@ private fun PageHeader(title: String, subtitle: String, action: (@Composable () 
 }
 
 @Composable
-private fun HomeScreen(projects: List<Project>, onProject: (Project) -> Unit, onObjects: () -> Unit, onTeam: () -> Unit) {
+private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (Project) -> Unit, onObjects: () -> Unit, onTeam: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(28.dp, 22.dp, 28.dp, 18.dp)) {
         PageHeader("Добрий ранок, Андрію!", "Об’єктів: ${projects.size}") {
             Surface(shape = RoundedCornerShape(13.dp), color = Surface, border = androidx.compose.foundation.BorderStroke(1.dp, Border)) { Row(Modifier.padding(14.dp, 9.dp), verticalAlignment=Alignment.CenterVertically) { Box(Modifier.size(8.dp).clip(CircleShape).background(Teal)); Spacer(Modifier.width(8.dp)); Text("Синхронізовано", color=Muted, fontSize=12.sp) } }
@@ -257,9 +273,15 @@ private fun HomeScreen(projects: List<Project>, onProject: (Project) -> Unit, on
             }
             SurfaceCard(Modifier.weight(1f).fillMaxHeight()) {
                 SectionTitle("Моя бригада", "Керувати", onTeam)
-                Text("4 людини • бригада №3", color=Muted, fontSize=12.sp)
+                Text("У складі: ${team.size}", color=Muted, fontSize=12.sp)
                 Spacer(Modifier.height(15.dp))
-                workers.take(4).forEach { WorkerCompact(it) }
+                if (team.isEmpty()) {
+                    Text("Склад бригади не обрано. Додайте співробітників у вкладці «Бригада».", color=Muted, fontSize=12.sp)
+                } else {
+                    LazyColumn(Modifier.weight(1f)) {
+                        items(team, key={it.initials}) { WorkerCompact(it) }
+                    }
+                }
             }
         }
     }
@@ -323,14 +345,12 @@ private fun ObjectsScreen(projects: List<Project>, onProject: (Project) -> Unit,
 }
 
 @Composable
-private fun TeamScreen() {
-    val context = LocalContext.current
-    val preferences = remember { context.getSharedPreferences("team", Context.MODE_PRIVATE) }
-    var selected by remember { mutableStateOf(preferences.getStringSet("members", setOf("0","1","2","3"))!!.map { it.toInt() }.toSet()) }
+private fun TeamScreen(members: List<Int>, onSave: (List<Int>) -> Unit) {
+    var selected by rememberSaveable { mutableStateOf(members) }
     var saved by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().padding(28.dp,22.dp)) {
         PageHeader("Моя бригада", if(saved) "Склад збережено" else "Оберіть співробітників, які працюють з вами сьогодні") {
-            Button(onClick={preferences.edit().putStringSet("members",selected.map {it.toString()}.toSet()).apply();saved=true}) { Text("Зберегти склад") }
+            Button(onClick={onSave(selected);saved=true}) { Text("Зберегти склад") }
         }
         Spacer(Modifier.height(20.dp))
         SurfaceCard(Modifier.fillMaxSize()) {
@@ -369,7 +389,7 @@ private fun ObjectDetail(project: Project, onBack: () -> Unit, onUpdate: (Projec
         Spacer(Modifier.height(18.dp))
         LazyColumn(verticalArrangement=Arrangement.spacedBy(18.dp)) {
             items(project.blocks, key={it.id}) { block ->
-                PhotoBlock(block, project.blocks.indexOf(block)+1) { updated ->
+                PhotoBlock(block) { updated ->
                     onUpdate(project.copy(blocks=project.blocks.map {if(it.id==block.id)updated else it}))
                 }
             }
@@ -378,7 +398,7 @@ private fun ObjectDetail(project: Project, onBack: () -> Unit, onUpdate: (Projec
 }
 
 @Composable
-private fun PhotoBlock(block: WorkBlock, number: Int, onUpdate: (WorkBlock) -> Unit) {
+private fun PhotoBlock(block: WorkBlock, onUpdate: (WorkBlock) -> Unit) {
     val context=LocalContext.current
     val currentBlock by rememberUpdatedState(block)
     val update by rememberUpdatedState(onUpdate)
@@ -402,7 +422,15 @@ private fun PhotoBlock(block: WorkBlock, number: Int, onUpdate: (WorkBlock) -> U
     }
     SurfaceCard(Modifier.fillMaxWidth()) {
         Row(verticalAlignment=Alignment.CenterVertically) {
-            Text("Блок $number",fontWeight=FontWeight.Bold,fontSize=18.sp,modifier=Modifier.weight(1f))
+            OutlinedTextField(
+                value=block.name,
+                onValueChange={name -> update(currentBlock.copy(name=name))},
+                label={Text("Назва блоку")},
+                placeholder={Text("Наприклад, кухня")},
+                singleLine=true,
+                modifier=Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(12.dp))
             OutlinedButton(onClick={gallery.launch("image/*")}) {Text("Додати фото")}
             Spacer(Modifier.width(10.dp))
             Button(onClick={
