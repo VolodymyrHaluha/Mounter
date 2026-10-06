@@ -14,6 +14,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
+import kotlinx.coroutines.launch
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -68,7 +69,10 @@ data class Project(
     val id: String = UUID.randomUUID().toString(),
     val status: WorkStatus = WorkStatus.TODO,
     val blocks: List<WorkBlock> = listOf(WorkBlock())
-)
+) {
+    // Keep the old name field readable for previously saved objects.
+    val displayName: String get() = customer.ifBlank { name }
+}
 data class Worker(val initials: String, val name: String, val role: String, val color: Color)
 enum class WorkStatus { DONE, IN_PROGRESS, CANCELLED, TODO }
 enum class Screen { HOME, OBJECTS, TEAM, PROFILE, OBJECT_DETAIL }
@@ -301,8 +305,7 @@ private fun StatCard(label:String, value:String, note:String, color:Color, modif
 @Composable private fun ProjectRow(project: Project, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().clickable(onClick=onClick).padding(vertical=16.dp), verticalAlignment=Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(project.name, fontWeight=FontWeight.Bold, fontSize=16.sp)
-            Text("Замовник: ${project.customer}", color=Muted, fontSize=12.sp)
+            Text(project.displayName, fontWeight=FontWeight.Bold, fontSize=16.sp)
             Text("Блоків: ${project.blocks.size}", color=Muted, fontSize=12.sp)
         }
         StatusPill(project.status)
@@ -318,30 +321,71 @@ private fun StatCard(label:String, value:String, note:String, color:Color, modif
 
 @Composable
 private fun ObjectsScreen(projects: List<Project>, onProject: (Project) -> Unit, onCreate: (Project) -> Unit) {
-    var creating by remember { mutableStateOf(false) }
-    var name by rememberSaveable { mutableStateOf("") }
+    var creating by rememberSaveable { mutableStateOf(false) }
     var customer by rememberSaveable { mutableStateOf("") }
     Column(Modifier.fillMaxSize().padding(28.dp,22.dp)) {
         PageHeader("Об'єкти", "${projects.size} об'єктів • фото та примітки") {
             Button(onClick={ creating=true }) { Text("Створити об'єкт") }
         }
         Spacer(Modifier.height(20.dp))
-        if (projects.isEmpty()) Text("Створіть перший об'єкт: вкажіть назву та замовника.", color=Muted)
-        LazyColumn(verticalArrangement=Arrangement.spacedBy(12.dp)) {
-            items(projects, key={it.id}) { project -> SurfaceCard(Modifier.fillMaxWidth()) { ProjectRow(project) { onProject(project) } } }
+        if (projects.isEmpty()) Text("Створіть перший об'єкт: вкажіть замовника.", color=Muted)
+        LazyRow(
+            modifier=Modifier.weight(1f).fillMaxWidth(),
+            horizontalArrangement=Arrangement.spacedBy(16.dp)
+        ) {
+            items(projects, key={it.id}) { project ->
+                ObjectCard(project, Modifier.width(290.dp).fillParentMaxHeight()) { onProject(project) }
+            }
         }
     }
     if (creating) AlertDialog(
         onDismissRequest={creating=false}, title={Text("Новий об'єкт")},
-        text={ Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
-            OutlinedTextField(name, {name=it}, label={Text("Назва об'єкта")}, singleLine=true)
-            OutlinedTextField(customer, {customer=it}, label={Text("Замовник")}, singleLine=true)
-        } },
-        confirmButton={ TextButton(enabled=name.isNotBlank() && customer.isNotBlank(), onClick={
-            onCreate(Project(name.trim(),customer.trim())); name=""; customer=""; creating=false
+        text={ OutlinedTextField(customer, {customer=it}, label={Text("Замовник")}, singleLine=true) },
+        confirmButton={ TextButton(enabled=customer.isNotBlank(), onClick={
+            val value=customer.trim()
+            onCreate(Project(name=value, customer=value)); customer=""; creating=false
         }) {Text("Створити")} },
         dismissButton={TextButton(onClick={creating=false}) {Text("Скасувати")}}
     )
+}
+
+@Composable
+private fun ObjectCard(project: Project, modifier: Modifier, onOpen: () -> Unit) {
+    val photos=project.blocks.flatMap { block -> block.photos.map { block.name to it } }
+    SurfaceCard(modifier) {
+        Text(project.displayName, fontWeight=FontWeight.Bold, fontSize=18.sp,
+            modifier=Modifier.fillMaxWidth().clickable(onClick=onOpen))
+        Spacer(Modifier.height(6.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment=Alignment.CenterVertically) {
+            Text("Блоків: ${project.blocks.size}", color=Muted, fontSize=12.sp, modifier=Modifier.weight(1f))
+            StatusPill(project.status)
+        }
+        Spacer(Modifier.height(12.dp))
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement=Arrangement.spacedBy(14.dp)) {
+            if (photos.isEmpty()) {
+                item {
+                    Box(Modifier.fillMaxWidth().height(160.dp).clip(RoundedCornerShape(14.dp))
+                        .background(CanvasColor).clickable(onClick=onOpen), contentAlignment=Alignment.Center) {
+                        Text("Фото ще не додані", color=Muted)
+                    }
+                }
+            }
+            items(photos, key={it.second.id}) { (blockName, photo) ->
+                Column {
+                    if (blockName.isNotBlank()) {
+                        Text(blockName, fontWeight=FontWeight.SemiBold, fontSize=13.sp)
+                        Spacer(Modifier.height(6.dp))
+                    }
+                    Box(Modifier.clickable(onClick=onOpen)) { PhotoPreview(photo.path, height=160.dp) }
+                    Spacer(Modifier.height(8.dp))
+                    Text(photo.note.ifBlank { "Примітки ще не додані" },
+                        color=if(photo.note.isBlank()) Muted else Ink, fontSize=12.sp)
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Button(onClick=onOpen, modifier=Modifier.fillMaxWidth()) { Text("Відкрити об'єкт") }
+    }
 }
 
 @Composable
@@ -375,7 +419,7 @@ private fun ObjectDetail(project: Project, onBack: () -> Unit, onUpdate: (Projec
     Column(Modifier.fillMaxSize().padding(28.dp,20.dp)) {
         Row(verticalAlignment=Alignment.CenterVertically) {
             BackButton(onBack); Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {Text(project.name,fontWeight=FontWeight.Bold,fontSize=25.sp);Text("Замовник: ${project.customer}",color=Muted,fontSize=12.sp)}
+            Column(Modifier.weight(1f)) {Text(project.displayName,fontWeight=FontWeight.Bold,fontSize=25.sp);Text("Блоків: ${project.blocks.size}",color=Muted,fontSize=12.sp)}
             var expanded by remember {mutableStateOf(false)}
             Box {
                 OutlinedButton(onClick={expanded=true}) {StatusPill(project.status);Text(" ▾")}
@@ -404,20 +448,43 @@ private fun PhotoBlock(block: WorkBlock, onUpdate: (WorkBlock) -> Unit) {
     val update by rememberUpdatedState(onUpdate)
     var pendingPath by rememberSaveable {mutableStateOf<String?>(null)}
     var error by remember {mutableStateOf<String?>(null)}
+    var importing by remember {mutableStateOf(false)}
+    val scope=rememberCoroutineScope()
     val camera=rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         pendingPath?.let {path ->
             if(success) update(currentBlock.copy(photos=currentBlock.photos+PhotoEntry(path))) else File(path).delete()
         }
         pendingPath=null
     }
-    val gallery=rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if(uri!=null) {
-            var target: File? = null
-            try {
-                target=File(context.filesDir,"photos/${UUID.randomUUID()}.jpg").also {it.parentFile?.mkdirs()}
-                context.contentResolver.openInputStream(uri)?.use {input -> target.outputStream().use {input.copyTo(it)} } ?: error("Фото недоступне")
-                update(currentBlock.copy(photos=currentBlock.photos+PhotoEntry(target.absolutePath)))
-            } catch (e: Exception) {target?.delete();error="Не вдалося додати фото. Спробуйте ще раз."}
+    val gallery=rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        if(uris.isNotEmpty()) {
+            importing=true
+            error=null
+            scope.launch {
+                try {
+                    val imported=kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        uris.mapNotNull { uri ->
+                            var target: File? = null
+                            try {
+                                val file=File(context.filesDir,"photos/${UUID.randomUUID()}.jpg")
+                                    .also {it.parentFile?.mkdirs()}
+                                target=file
+                                context.contentResolver.openInputStream(uri)?.use {input ->
+                                    file.outputStream().use {output -> input.copyTo(output)}
+                                } ?: error("Фото недоступне")
+                                PhotoEntry(file.absolutePath)
+                            } catch(e: Exception) {
+                                target?.delete()
+                                null
+                            }
+                        }
+                    }
+                    if(imported.isNotEmpty()) update(currentBlock.copy(photos=currentBlock.photos+imported))
+                    if(imported.size<uris.size) error="Не вдалося додати ${uris.size-imported.size} фото. Спробуйте ще раз."
+                } finally {
+                    importing=false
+                }
+            }
         }
     }
     SurfaceCard(Modifier.fillMaxWidth()) {
@@ -431,7 +498,7 @@ private fun PhotoBlock(block: WorkBlock, onUpdate: (WorkBlock) -> Unit) {
                 modifier=Modifier.weight(1f)
             )
             Spacer(Modifier.width(12.dp))
-            OutlinedButton(onClick={gallery.launch("image/*")}) {Text("Додати фото")}
+            OutlinedButton(enabled=!importing, onClick={gallery.launch("image/*")}) {Text(if(importing) "Додаємо фото…" else "Додати фото")}
             Spacer(Modifier.width(10.dp))
             Button(onClick={
                 try {
@@ -444,28 +511,45 @@ private fun PhotoBlock(block: WorkBlock, onUpdate: (WorkBlock) -> Unit) {
         error?.let {Text(it,color=Red)}
         Spacer(Modifier.height(12.dp))
         if(block.photos.isEmpty()) {
-            Box(Modifier.fillMaxWidth().height(180.dp).clip(RoundedCornerShape(14.dp)).background(CanvasColor),contentAlignment=Alignment.Center) {
-                Text("Сфотографуйте або додайте фото",color=Muted)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.spacedBy(14.dp)) {
+                repeat(3) {
+                    Column(Modifier.weight(1f)) {
+                        Box(Modifier.fillMaxWidth().height(200.dp).clip(RoundedCornerShape(14.dp))
+                            .background(CanvasColor).clickable(enabled=!importing) { gallery.launch("image/*") },
+                            contentAlignment=Alignment.Center) {
+                            Text("Додати фото", color=Muted)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text("Примітка з'явиться після додавання фото", color=Muted, fontSize=11.sp)
+                    }
+                }
             }
         }
-        block.photos.forEach {photo ->
-            key(photo.id) {
-                PhotoPreview(photo.path)
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value=photo.note,
-                    onValueChange={note -> update(currentBlock.copy(photos=currentBlock.photos.map {if(it.id==photo.id)it.copy(note=note) else it}))},
-                    label={Text("Примітки до фото")}, placeholder={Text("Характеристики та короткий опис")},
-                    modifier=Modifier.fillMaxWidth(), minLines=2
-                )
-                Spacer(Modifier.height(18.dp))
+        block.photos.chunked(3).forEach { rowPhotos ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.spacedBy(14.dp)) {
+                rowPhotos.forEach {photo ->
+                    key(photo.id) {
+                        Column(Modifier.weight(1f)) {
+                            PhotoPreview(photo.path, height=200.dp)
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value=photo.note,
+                                onValueChange={note -> update(currentBlock.copy(photos=currentBlock.photos.map {if(it.id==photo.id)it.copy(note=note) else it}))},
+                                label={Text("Примітки до фото")}, placeholder={Text("Характеристики та короткий опис")},
+                                modifier=Modifier.fillMaxWidth(), minLines=2
+                            )
+                        }
+                    }
+                }
+                repeat(3-rowPhotos.size) { Spacer(Modifier.weight(1f)) }
             }
+            Spacer(Modifier.height(18.dp))
         }
     }
 }
 
 @Composable
-private fun PhotoPreview(path: String) {
+private fun PhotoPreview(path: String, height: androidx.compose.ui.unit.Dp = 260.dp) {
     var bitmap by remember(path) {mutableStateOf<android.graphics.Bitmap?>(null)}
     LaunchedEffect(path) {
         bitmap=kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -476,7 +560,7 @@ private fun PhotoPreview(path: String) {
             BitmapFactory.decodeFile(path,BitmapFactory.Options().apply {inSampleSize=sample})
         }
     }
-    Box(Modifier.fillMaxWidth().height(260.dp).clip(RoundedCornerShape(14.dp)).background(CanvasColor),contentAlignment=Alignment.Center) {
+    Box(Modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(14.dp)).background(CanvasColor),contentAlignment=Alignment.Center) {
         bitmap?.let {Image(it.asImageBitmap(),contentDescription="Фото об'єкта",modifier=Modifier.fillMaxSize(),contentScale=ContentScale.Fit)}
             ?: Text("Завантаження фото…",color=Muted)
     }
