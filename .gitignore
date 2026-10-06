@@ -13,3 +13,8 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Local PostgreSQL configuration and Python environment
+server/.env
+server/.venv/
+__pycache__/

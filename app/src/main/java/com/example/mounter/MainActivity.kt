@@ -109,21 +109,13 @@ private class ProjectStore(private val context: Context) {
                 b.photos.forEach { photo -> photos.put(JSONObject().put("id", photo.id).put("path", photo.path).put("note", photo.note)) }
                 blocks.put(JSONObject().put("id", b.id).put("name", b.name).put("photos", photos))
             }
-            data.put(JSONObject().put("id", p.id).put("name", p.name).put("customer", p.customer).put("status", p.status.name).put("blocks", blocks))
+            data.put(JSONObject().put("id", p.id).put("name", p.name).put("customer", p.customer).put("status", p.status.name).put("blocks", blocks).put("customer_id", p.customerId ?: JSONObject.NULL))
         }
         val temporary = File(context.filesDir, "objects.tmp")
         temporary.writeText(data.toString())
         check(temporary.renameTo(file)) { "Не вдалося зберегти об'єкти" }
     }
 }
-
-private val workers = listOf(
-    Worker("АК", "Андрій Коваленко", "Бригадир", Color(0xFF536E68)),
-    Worker("МБ", "Максим Бондаренко", "Монтажник", Color(0xFF8C705F)),
-    Worker("ОМ", "Олексій Мельник", "Монтажник", Color(0xFF697A95)),
-    Worker("ДШ", "Дмитро Шевченко", "Помічник", Color(0xFF947865)),
-    Worker("РТ", "Роман Ткаченко", "Монтажник", Color(0xFF6C836B))
-)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -287,7 +279,21 @@ private fun PageHeader(title: String, subtitle: String, action: (@Composable () 
 private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (Project) -> Unit, onObjects: () -> Unit, onTeam: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(28.dp, 22.dp, 28.dp, 18.dp)) {
         PageHeader("Добрий ранок, Андрію!", "Об’єктів: ${projects.size}") {
-            Surface(shape = RoundedCornerShape(13.dp), color = Surface, border = androidx.compose.foundation.BorderStroke(1.dp, Border)) { Row(Modifier.padding(14.dp, 9.dp), verticalAlignment=Alignment.CenterVertically) { Box(Modifier.size(8.dp).clip(CircleShape).background(Teal)); Spacer(Modifier.width(8.dp)); Text("Синхронізовано", color=Muted, fontSize=12.sp) } }
+            Surface(modifier=Modifier.clickable(onClick=onConnection),shape=RoundedCornerShape(13.dp),color=Surface,border=androidx.compose.foundation.BorderStroke(1.dp,Border)) {
+                Row(Modifier.padding(14.dp,9.dp),verticalAlignment=Alignment.CenterVertically) {
+                    Box(Modifier.size(8.dp).clip(CircleShape).background(when(databaseStatus) {
+                        DatabaseStatus.CONNECTED -> Teal
+                        DatabaseStatus.CHECKING -> Orange
+                        DatabaseStatus.ERROR -> Red
+                    }))
+                    Spacer(Modifier.width(8.dp))
+                    Text(when(databaseStatus) {
+                        DatabaseStatus.CONNECTED -> "БД підключено"
+                        DatabaseStatus.CHECKING -> "Підключення до БД…"
+                        DatabaseStatus.ERROR -> "Помилка підключення до БД"
+                    },color=Muted,fontSize=12.sp)
+                }
+            }
         }
         Spacer(Modifier.height(19.dp))
         Row(Modifier.fillMaxWidth().height(116.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -352,9 +358,24 @@ private fun StatCard(label:String, value:String, note:String, color:Color, modif
 private fun ObjectsScreen(projects: List<Project>, onProject: (Project) -> Unit, onPhoto: (Project, WorkBlock, PhotoEntry) -> Unit, onCreate: (Project) -> Unit) {
     var creating by rememberSaveable { mutableStateOf(false) }
     var customer by rememberSaveable { mutableStateOf("") }
+    var chosenClient by remember { mutableStateOf<Client?>(null) }
+    var clients by remember { mutableStateOf<List<Client>>(emptyList()) }
+    var searching by remember { mutableStateOf(false) }
+    var searchError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(customer,creating,api) {
+        clients=emptyList();searchError=null
+        if(!creating) return@LaunchedEffect
+        searching=true
+        try {
+            delay(300)
+            clients=api.clients(customer)
+        } catch(error: kotlinx.coroutines.CancellationException) {throw error}
+        catch(error: Exception) {searchError=error.message ?: "Помилка пошуку замовника.";onError(searchError!!)}
+        finally {searching=false}
+    }
     Column(Modifier.fillMaxSize().padding(28.dp,22.dp)) {
         PageHeader("Об'єкти", "${projects.size} об'єктів • фото та примітки") {
-            Button(onClick={ creating=true }) { Text("Створити об'єкт") }
+            Button(onClick={ customer="";chosenClient=null;creating=true }) { Text("Створити об'єкт") }
         }
         Spacer(Modifier.height(20.dp))
         if (projects.isEmpty()) Text("Створіть перший об'єкт: вкажіть замовника.", color=Muted)
@@ -425,18 +446,77 @@ private fun TeamScreen(members: List<Int>, onSave: (List<Int>) -> Unit) {
         PageHeader("Моя бригада", if(saved) "Склад збережено" else "Оберіть співробітників, які працюють з вами сьогодні") {
             Button(onClick={onSave(selected);saved=true}) { Text("Зберегти склад") }
         }
-        Spacer(Modifier.height(20.dp))
-        SurfaceCard(Modifier.fillMaxSize()) {
-            Text("Співробітники",fontWeight=FontWeight.Bold,fontSize=17.sp)
-            LazyColumn {
-                items(workers.indices.toList()) { index ->
-                    val w=workers[index]
-                    Row(Modifier.fillMaxWidth().clickable {selected=if(index in selected)selected-index else selected+index;saved=false}.padding(vertical=9.dp),verticalAlignment=Alignment.CenterVertically) {
-                        Avatar(w,46); Spacer(Modifier.width(12.dp))
-                        Column(Modifier.weight(1f)) {Text(w.name,fontWeight=FontWeight.SemiBold);Text(w.role,color=Muted,fontSize=11.sp)}
-                        Checkbox(checked=index in selected,onCheckedChange={checked->selected=if(checked)selected+index else selected-index;saved=false})
+        Spacer(Modifier.height(12.dp))
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement=Arrangement.spacedBy(14.dp)) {
+            if (photos.isEmpty()) {
+                item {
+                    Box(Modifier.fillMaxWidth().height(160.dp).clip(RoundedCornerShape(14.dp))
+                        .background(CanvasColor).clickable(onClick=onOpen), contentAlignment=Alignment.Center) {
+                        Text("Фото ще не додані", color=Muted)
                     }
-                    HorizontalDivider(color=Border)
+                }
+            }
+            items(photos, key={it.second.id}) { (block, photo) ->
+                Column {
+                    if (block.name.isNotBlank()) {
+                        Text(block.name, fontWeight=FontWeight.SemiBold, fontSize=13.sp)
+                        Spacer(Modifier.height(6.dp))
+                    }
+                    Box(Modifier.clickable { onPhoto(block, photo) }) { PhotoPreview(photo.path, height=160.dp) }
+                    Spacer(Modifier.height(8.dp))
+                    Text(photo.note.ifBlank { "Примітки ще не додані" },
+                        color=if(photo.note.isBlank()) Muted else Ink, fontSize=12.sp)
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Button(onClick=onOpen, modifier=Modifier.fillMaxWidth()) { Text("Відкрити об'єкт") }
+    }
+}
+
+@Composable
+private fun TeamScreen(members: List<Worker>, api: DirectoryApi, onError: (String) -> Unit, onSave: (List<Worker>) -> Unit) {
+    var query by rememberSaveable {mutableStateOf("")}
+    var results by remember {mutableStateOf<List<Worker>>(emptyList())}
+    var searching by remember {mutableStateOf(false)}
+    var searchError by remember {mutableStateOf<String?>(null)}
+    LaunchedEffect(query,api) {
+        results=emptyList();searchError=null
+        if(query.isBlank()) {searching=false;return@LaunchedEffect}
+        searching=true
+        try {
+            delay(300)
+            results=api.employees(query.trim())
+        } catch(error: kotlinx.coroutines.CancellationException) {throw error}
+        catch(error: Exception) {searchError=error.message ?: "Помилка пошуку співробітників.";onError(searchError!!)}
+        finally {searching=false}
+    }
+    val available=results.filterNot {result -> members.any {it.id==result.id}}
+    Column(Modifier.fillMaxSize().padding(28.dp,22.dp)) {
+        PageHeader("Моя бригада", "У складі: ${members.size} • зміни зберігаються автоматично")
+        Spacer(Modifier.height(16.dp))
+        OutlinedTextField(query,{query=it},label={Text("Пошук співробітника за ПІБ")},singleLine=true,modifier=Modifier.fillMaxWidth())
+        Spacer(Modifier.height(16.dp))
+        SurfaceCard(Modifier.fillMaxWidth().weight(1f)) {
+            LazyColumn {
+                if(query.isNotBlank()) {
+                    item {
+                        Text("Результати пошуку",fontWeight=FontWeight.Bold)
+                        if(searching) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        searchError?.let {Text(it,color=Red)}
+                        if(!searching && available.isEmpty() && searchError==null) Text("Нових співробітників не знайдено",color=Muted)
+                    }
+                    items(available,key={"result-${it.id}"}) {worker ->
+                        EmployeeChoice(worker,api,false) {checked -> if(checked) onSave((members+worker).distinctBy {it.id})}
+                    }
+                }
+                item {
+                    Spacer(Modifier.height(16.dp))
+                    Text("Обрані співробітники",fontWeight=FontWeight.Bold)
+                    if(members.isEmpty()) Text("Знайдіть співробітника та позначте checkbox, щоб додати до бригади.",color=Muted)
+                }
+                items(members,key={"selected-${it.id}"}) {worker ->
+                    EmployeeChoice(worker,api,true) {checked -> if(!checked) onSave(members.filterNot {it.id==worker.id})}
                 }
             }
         }
@@ -742,4 +822,11 @@ private fun PhotoActionGlyph(delete: Boolean) {
 @Composable private fun StatusPill(status:WorkStatus){val data=when(status){WorkStatus.DONE->Triple("Виконано",Mint,TealDark);WorkStatus.IN_PROGRESS->Triple("В процесі",Color(0xFF4A381D),Color(0xFFFFCE88));WorkStatus.CANCELLED->Triple("Скасовано",Color(0xFF492B29),Color(0xFFFFB4AC));WorkStatus.TODO->Triple("Очікує",CanvasColor,Muted)};Box(Modifier.clip(CircleShape).background(data.second).padding(10.dp,6.dp)){Text(data.first,color=data.third,fontSize=10.sp,fontWeight=FontWeight.Bold)}}
 
 @Composable private fun BackButton(onClick:()->Unit){Surface(Modifier.size(42.dp).clickable(onClick=onClick),shape=RoundedCornerShape(12.dp),color=Surface,border=androidx.compose.foundation.BorderStroke(1.dp,Border)){Box(contentAlignment=Alignment.Center){Text("‹",fontSize=28.sp,color=Ink)}}}
-@Composable private fun ProfileScreen(){Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center){SurfaceCard(Modifier.width(380.dp)){Row(verticalAlignment=Alignment.CenterVertically){Avatar(workers.first(),70);Spacer(Modifier.width(16.dp));Column{Text(workers.first().name,fontWeight=FontWeight.Bold,fontSize=20.sp);Text("Бригадир • бригада №3",color=Muted)}}}}}
+@Composable private fun ProfileScreen() {
+    Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) {
+        SurfaceCard(Modifier.width(380.dp)) {
+            Text("Монтажник",fontWeight=FontWeight.Bold,fontSize=20.sp)
+            Text("Склад бригади обирається у вкладці «Бригада»",color=Muted)
+        }
+    }
+}
