@@ -2,7 +2,6 @@ package com.example.mounter
 
 import android.app.PendingIntent
 import android.content.ActivityNotFoundException
-import android.content.ComponentName
 import android.content.Intent
 import android.database.ContentObserver
 import android.net.Uri
@@ -15,6 +14,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -47,6 +48,10 @@ private data class AttendanceAccess(
 }
 
 private fun readAttendanceAccess(activity: MainActivity): AttendanceAccess {
+    val provider = activity.packageManager.resolveContentProvider(attendanceUri.authority!!, 0)
+        ?: error("Додаток відміток не підтримує зв’язок із Mounter. Оновіть його інтеграцію.")
+    val expectedPackage = selectedAttendanceApp(activity)?.packageName ?: ATTENDANCE_PACKAGE
+    check(provider.packageName == expectedPackage) { "Вибраний додаток відміток не надає стан для Mounter. Оновіть його інтеграцію." }
     val cursor = activity.contentResolver.query(attendanceUri, null, null, null, null)
         ?: error("Оновіть додаток відміток: він ще не підтримує зв’язок із Mounter.")
     return cursor.use {
@@ -67,6 +72,9 @@ internal fun AttendanceGate(activity: MainActivity) {
     var checking by remember { mutableStateOf(true) }
     var launching by remember { mutableStateOf(false) }
     var refreshJob by remember { mutableStateOf<Job?>(null) }
+    var appChoices by remember { mutableStateOf<List<AttendanceApp>?>(null) }
+    var appSearch by remember { mutableStateOf("") }
+    var forwardedTag by remember { mutableStateOf<Tag?>(null) }
 
     fun refresh() {
         refreshJob?.cancel()
@@ -75,8 +83,8 @@ internal fun AttendanceGate(activity: MainActivity) {
             try {
                 access = withContext(Dispatchers.IO) { readAttendanceAccess(activity) }
             } catch(error: kotlinx.coroutines.CancellationException) { throw error }
-            catch(_: Exception) {
-                access = access.copy(state="locked", eventId="", message="Немає зв’язку з додатком відміток. Установіть його версію з підтримкою Mounter.")
+            catch(error: Exception) {
+                access = access.copy(state="locked", eventId="", message=error.message ?: "Немає зв’язку з додатком відміток. Установіть його версію з підтримкою Mounter.")
             } finally { checking = false }
         }
     }
@@ -88,6 +96,16 @@ internal fun AttendanceGate(activity: MainActivity) {
     }
     fun openAttendance(tag: Tag? = null) {
         if(launching) return
+        val apps = attendanceApps(activity)
+        val saved = selectedAttendanceApp(activity)
+        val component = apps.firstOrNull { it.component == saved }?.component
+            ?: apps.singleOrNull { it.component.packageName == ATTENDANCE_PACKAGE }?.component
+        if(component == null) {
+            forwardedTag = tag
+            appSearch = ""
+            appChoices = apps
+            return
+        }
         refreshJob?.cancel()
         checking = false
         // Re-read the confirmed attendance state when returning to Mounter.
@@ -102,10 +120,7 @@ internal fun AttendanceGate(activity: MainActivity) {
                     data = Uri.parse("mounter-attendance://return/$id")
                     addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 }, PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE)
-            // The companion's exported MainActivity is known from its manifest.
-            // A null launcher lookup does not prove the app is absent.
-            val intent = activity.packageManager.getLaunchIntentForPackage(ATTENDANCE_PACKAGE)
-                ?: Intent().setComponent(ComponentName(ATTENDANCE_PACKAGE, "$ATTENDANCE_PACKAGE.MainActivity"))
+            val intent = Intent().setComponent(component)
             intent.apply {
                 action = ATTENDANCE_ACTION
                 // Keep the result relationship: launch intents normally contain NEW_TASK.
@@ -119,7 +134,7 @@ internal fun AttendanceGate(activity: MainActivity) {
             callback?.cancel()
             launching = false
             val message = when(error) {
-                is ActivityNotFoundException -> "Не вдалося запустити com.example.app.MainActivity. Перевірте, що APP-TEST встановлено в тому самому профілі Android, що й Mounter."
+                is ActivityNotFoundException -> "Не вдалося запустити ${component.flattenToShortString()}. Натисніть «Вибрати додаток відміток» і виберіть установлену версію в цьому профілі Android."
                 is SecurityException -> "Android заборонив запуск APP-TEST. Перевірте android:exported=\"true\" для MainActivity та дозволи режиму кіоску."
                 else -> error.message ?: "Не вдалося відкрити додаток відміток."
             }
@@ -165,9 +180,37 @@ internal fun AttendanceGate(activity: MainActivity) {
                             Text("Відкрити додаток відміток")
                         }
                         TextButton(enabled=!checking, onClick={ refresh() }) { Text("Перевірити відмітку") }
+                        TextButton(enabled=!launching, onClick={
+                            forwardedTag = null
+                            appSearch = ""
+                            appChoices = attendanceApps(activity)
+                        }) { Text("Вибрати додаток відміток") }
                     }
                 }
             }
         }
+    }
+    appChoices?.let { choices ->
+        AlertDialog(onDismissRequest={ appChoices=null; forwardedTag=null },
+            title={ Text("Виберіть додаток відміток") },
+            text={ Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(value=appSearch, onValueChange={ appSearch=it }, label={ Text("Назва або пакет додатка") })
+                if(choices.isEmpty()) Text("У цьому профілі Android немає доступних додатків. Установіть «Відмітка TEST» в тому самому профілі, що й «Монтажник».")
+                LazyColumn(Modifier.heightIn(max=320.dp)) {
+                    items(choices.filter { it.label.contains(appSearch, true) || it.component.packageName.contains(appSearch, true) }, key={ it.component.flattenToString() }) { app ->
+                        TextButton(onClick={
+                            selectAttendanceApp(activity, app.component)
+                            val tag = forwardedTag
+                            appChoices = null
+                            forwardedTag = null
+                            openAttendance(tag)
+                        }) { Column(Modifier.fillMaxWidth()) {
+                            Text(app.label)
+                            Text(app.component.flattenToShortString(), style=MaterialTheme.typography.bodySmall)
+                        } }
+                    }
+                }
+            } },
+            confirmButton={ TextButton(onClick={ appChoices=null; forwardedTag=null }) { Text("Закрити") } })
     }
 }
