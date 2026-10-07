@@ -1,6 +1,7 @@
 package com.example.mounter
 
 import android.app.PendingIntent
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.database.ContentObserver
 import android.net.Uri
@@ -13,10 +14,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -31,33 +33,37 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
-private const val ATTENDANCE_PACKAGE = "com.example.app"
+private const val ATTENDANCE_PACKAGE = "com.example.app.test"
 private const val ATTENDANCE_ACTION = "com.example.app.action.MOUNTER_ATTENDANCE"
 private const val RETURN_CALLBACK = "com.example.mounter.extra.ATTENDANCE_RETURN"
 private const val REQUEST_ID = "com.example.mounter.extra.ATTENDANCE_REQUEST_ID"
-private val attendanceUri = Uri.parse("content://com.example.app.mounter.attendance/status")
+private fun attendanceUris(packageName: String): List<Uri> = listOf(
+    Uri.parse("content://$packageName.mounter.attendance/status"),
+    // Earlier companion integrations use a fixed authority despite a different applicationId.
+    Uri.parse("content://com.example.app.mounter.attendance/status")
+).distinct()
 
 private data class AttendanceAccess(
     val state: String = "locked",
-    val generation: Long = 0,
     val eventId: String = "",
-    val message: String = "Відмітьте «Прихід», щоб відкрити головне меню.",
-    val requestId: String = ""
+    val message: String = "Відмітьте «Прихід», щоб відкрити головне меню."
 ) {
     val allowed: Boolean get() = state == "arrival" && eventId.isNotBlank()
 }
 
 private fun readAttendanceAccess(activity: MainActivity): AttendanceAccess {
+    val expectedPackage = selectedAttendanceApp(activity)?.packageName ?: ATTENDANCE_PACKAGE
+    val attendanceUri = attendanceUris(expectedPackage).firstOrNull { uri ->
+        activity.packageManager.resolveContentProvider(uri.authority!!, 0)?.packageName == expectedPackage
+    } ?: error("Вибраний додаток відміток $expectedPackage не надає стан для Mounter. Оновіть його інтеграцію.")
     val cursor = activity.contentResolver.query(attendanceUri, null, null, null, null)
         ?: error("Оновіть додаток відміток: він ще не підтримує зв’язок із Mounter.")
     return cursor.use {
         check(it.moveToFirst()) { "Додаток відміток не повернув стан." }
         AttendanceAccess(
             state=it.getString(it.getColumnIndexOrThrow("state")),
-            generation=it.getLong(it.getColumnIndexOrThrow("generation")),
             eventId=it.getString(it.getColumnIndexOrThrow("event_id")),
-            message=it.getString(it.getColumnIndexOrThrow("message")),
-            requestId=it.getColumnIndex("request_id").takeIf { column -> column >= 0 }?.let(it::getString).orEmpty()
+            message=it.getString(it.getColumnIndexOrThrow("message"))
         )
     }
 }
@@ -69,9 +75,11 @@ internal fun AttendanceGate(activity: MainActivity) {
     var access by remember { mutableStateOf(AttendanceAccess()) }
     var checking by remember { mutableStateOf(true) }
     var launching by remember { mutableStateOf(false) }
-    var blockedGeneration by rememberSaveable { mutableStateOf<Long?>(null) }
-    var pendingRequestId by rememberSaveable { mutableStateOf<String?>(null) }
     var refreshJob by remember { mutableStateOf<Job?>(null) }
+    var appChoices by remember { mutableStateOf<List<AttendanceApp>?>(null) }
+    var appSearch by remember { mutableStateOf("") }
+    var forwardedTag by remember { mutableStateOf<Tag?>(null) }
+    var providerPackage by remember { mutableStateOf(selectedAttendanceApp(activity)?.packageName ?: ATTENDANCE_PACKAGE) }
 
     fun refresh() {
         refreshJob?.cancel()
@@ -80,8 +88,8 @@ internal fun AttendanceGate(activity: MainActivity) {
             try {
                 access = withContext(Dispatchers.IO) { readAttendanceAccess(activity) }
             } catch(error: kotlinx.coroutines.CancellationException) { throw error }
-            catch(_: Exception) {
-                access = access.copy(state="locked", eventId="", message="Немає зв’язку з додатком відміток. Установіть його версію з підтримкою Mounter.")
+            catch(error: Exception) {
+                access = access.copy(state="locked", eventId="", message=error.message ?: "Немає зв’язку з додатком відміток. Установіть його версію з підтримкою Mounter.")
             } finally { checking = false }
         }
     }
@@ -93,24 +101,31 @@ internal fun AttendanceGate(activity: MainActivity) {
     }
     fun openAttendance(tag: Tag? = null) {
         if(launching) return
+        val apps = attendanceApps(activity)
+        val saved = selectedAttendanceApp(activity)
+        val component = apps.firstOrNull { it.component == saved }?.component
+            ?: apps.singleOrNull { it.component.packageName == ATTENDANCE_PACKAGE }?.component
+        if(component == null) {
+            forwardedTag = tag
+            appSearch = ""
+            appChoices = apps
+            return
+        }
         refreshJob?.cancel()
         checking = false
-        // A previous arrival must not reopen the menu after a cancelled/new scan.
-        blockedGeneration = maxOf(blockedGeneration ?: 0L, access.generation)
+        // Re-read the confirmed attendance state when returning to Mounter.
         access = access.copy(state="locked", message="Очікуємо підтвердження нової відмітки від сервера.")
         launching = true
         var callback: PendingIntent? = null
         try {
             val id = UUID.randomUUID().toString()
-            pendingRequestId = id
             callback = PendingIntent.getActivity(activity, 0,
                 Intent(activity, MainActivity::class.java).apply {
                     action = "com.example.mounter.action.ATTENDANCE_RETURN"
                     data = Uri.parse("mounter-attendance://return/$id")
                     addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 }, PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE)
-            val intent = activity.packageManager.getLaunchIntentForPackage(ATTENDANCE_PACKAGE)
-                ?: error("Додаток відміток com.example.app не встановлений або не має екрана запуску.")
+            val intent = Intent().setComponent(component)
             intent.apply {
                 action = ATTENDANCE_ACTION
                 // Keep the result relationship: launch intents normally contain NEW_TASK.
@@ -123,19 +138,24 @@ internal fun AttendanceGate(activity: MainActivity) {
         } catch(error: Exception) {
             callback?.cancel()
             launching = false
-            access = access.copy(state="locked", eventId="", message=error.message ?: "Не вдалося відкрити додаток відміток.")
+            val message = when(error) {
+                is ActivityNotFoundException -> "Не вдалося запустити ${component.flattenToShortString()}. Натисніть «Вибрати додаток відміток» і виберіть установлену версію в цьому профілі Android."
+                is SecurityException -> "Android заборонив запуск APP-TEST. Перевірте android:exported=\"true\" для MainActivity та дозволи режиму кіоску."
+                else -> error.message ?: "Не вдалося відкрити додаток відміток."
+            }
+            access = access.copy(state="locked", eventId="", message=message)
         }
     }
     val currentOpen by rememberUpdatedState<(Tag) -> Unit>({ openAttendance(it) })
     val currentRefresh by rememberUpdatedState<() -> Unit>({ refresh() })
-    DisposableEffect(activity, lifecycleOwner) {
+    DisposableEffect(activity, lifecycleOwner, providerPackage) {
         activity.onAttendanceTag = { currentOpen(it) }
         val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) { currentRefresh() }
         }
-        val registered = runCatching {
-            activity.contentResolver.registerContentObserver(attendanceUri, false, observer)
-        }.isSuccess
+        val registered = attendanceUris(providerPackage).map { uri ->
+            runCatching { activity.contentResolver.registerContentObserver(uri, false, observer) }.isSuccess
+        }.any { it }
         val lifecycleObserver = LifecycleEventObserver { _, event ->
             if(event == Lifecycle.Event.ON_RESUME) { launching=false; currentRefresh() }
         }
@@ -148,8 +168,7 @@ internal fun AttendanceGate(activity: MainActivity) {
             refreshJob?.cancel()
         }
     }
-    val allowed = access.allowed && (blockedGeneration == null || access.generation > blockedGeneration!!) &&
-        (pendingRequestId == null || access.requestId == pendingRequestId)
+    val allowed = access.allowed
     Box(Modifier.fillMaxSize()) {
         if(allowed) MounterApp()
         if(!allowed || checking) {
@@ -166,9 +185,38 @@ internal fun AttendanceGate(activity: MainActivity) {
                             Text("Відкрити додаток відміток")
                         }
                         TextButton(enabled=!checking, onClick={ refresh() }) { Text("Перевірити відмітку") }
+                        TextButton(enabled=!launching, onClick={
+                            forwardedTag = null
+                            appSearch = ""
+                            appChoices = attendanceApps(activity)
+                        }) { Text("Вибрати додаток відміток") }
                     }
                 }
             }
         }
+    }
+    appChoices?.let { choices ->
+        AlertDialog(onDismissRequest={ appChoices=null; forwardedTag=null },
+            title={ Text("Виберіть додаток відміток") },
+            text={ Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(value=appSearch, onValueChange={ appSearch=it }, label={ Text("Назва або пакет додатка") })
+                if(choices.isEmpty()) Text("У цьому профілі Android немає доступних додатків. Установіть «Відмітка TEST» в тому самому профілі, що й «Монтажник».")
+                LazyColumn(Modifier.heightIn(max=320.dp)) {
+                    items(choices.filter { it.label.contains(appSearch, true) || it.component.packageName.contains(appSearch, true) }, key={ it.component.flattenToString() }) { app ->
+                        TextButton(onClick={
+                            selectAttendanceApp(activity, app.component)
+                            providerPackage = app.component.packageName
+                            val tag = forwardedTag
+                            appChoices = null
+                            forwardedTag = null
+                            openAttendance(tag)
+                        }) { Column(Modifier.fillMaxWidth()) {
+                            Text(app.label)
+                            Text(app.component.flattenToShortString(), style=MaterialTheme.typography.bodySmall)
+                        } }
+                    }
+                }
+            } },
+            confirmButton={ TextButton(onClick={ appChoices=null; forwardedTag=null }) { Text("Закрити") } })
     }
 }

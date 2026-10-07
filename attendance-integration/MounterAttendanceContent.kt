@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -18,6 +19,10 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 internal fun MounterAttendanceContent(activity: Activity, content: @Composable () -> Unit) {
+    DisposableEffect(activity, activity.intent) {
+        MounterAttendanceBridge.attach(activity)
+        onDispose { MounterAttendanceBridge.detach(activity) }
+    }
     Box(Modifier.fillMaxSize()) {
         content()
         if(MounterAttendanceBridge.isTrustedRequest(activity)) {
