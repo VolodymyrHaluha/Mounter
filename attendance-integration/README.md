@@ -1,8 +1,13 @@
 # Відмітки перед відкриттям Mounter
 
-Інтеграція складається з Mounter, оновленого додатка відміток (`com.example.app`)
+Інтеграція складається з Mounter, оновленого додатка відміток (`applicationId = com.example.app.test`)
 та LOCAL-сервера. Потрібно встановити версії обох додатків із наведеними змінами.
 Mounter не звертається до БД або HTTP API; усі серверні запити виконує додаток відміток.
+Kotlin-код відміток залишається в `package com.example.app`: це namespace коду,
+а не пакет установленого APK. Mounter за замовчуванням запускає фактичну
+launcher-activity пакета `com.example.app.test`. Для читання стану підтримуються
+authority `com.example.app.test.mounter.attendance` та попередня фіксована
+`com.example.app.mounter.attendance`; provider має належати вибраному пакету.
 
 ## Додаток відміток
 

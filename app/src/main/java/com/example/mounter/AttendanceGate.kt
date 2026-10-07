@@ -33,11 +33,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
-private const val ATTENDANCE_PACKAGE = "com.example.app"
+private const val ATTENDANCE_PACKAGE = "com.example.app.test"
 private const val ATTENDANCE_ACTION = "com.example.app.action.MOUNTER_ATTENDANCE"
 private const val RETURN_CALLBACK = "com.example.mounter.extra.ATTENDANCE_RETURN"
 private const val REQUEST_ID = "com.example.mounter.extra.ATTENDANCE_REQUEST_ID"
-private val attendanceUri = Uri.parse("content://com.example.app.mounter.attendance/status")
+private fun attendanceUris(packageName: String): List<Uri> = listOf(
+    Uri.parse("content://$packageName.mounter.attendance/status"),
+    // Earlier companion integrations use a fixed authority despite a different applicationId.
+    Uri.parse("content://com.example.app.mounter.attendance/status")
+).distinct()
 
 private data class AttendanceAccess(
     val state: String = "locked",
@@ -48,10 +52,10 @@ private data class AttendanceAccess(
 }
 
 private fun readAttendanceAccess(activity: MainActivity): AttendanceAccess {
-    val provider = activity.packageManager.resolveContentProvider(attendanceUri.authority!!, 0)
-        ?: error("Додаток відміток не підтримує зв’язок із Mounter. Оновіть його інтеграцію.")
     val expectedPackage = selectedAttendanceApp(activity)?.packageName ?: ATTENDANCE_PACKAGE
-    check(provider.packageName == expectedPackage) { "Вибраний додаток відміток не надає стан для Mounter. Оновіть його інтеграцію." }
+    val attendanceUri = attendanceUris(expectedPackage).firstOrNull { uri ->
+        activity.packageManager.resolveContentProvider(uri.authority!!, 0)?.packageName == expectedPackage
+    } ?: error("Вибраний додаток відміток $expectedPackage не надає стан для Mounter. Оновіть його інтеграцію.")
     val cursor = activity.contentResolver.query(attendanceUri, null, null, null, null)
         ?: error("Оновіть додаток відміток: він ще не підтримує зв’язок із Mounter.")
     return cursor.use {
@@ -75,6 +79,7 @@ internal fun AttendanceGate(activity: MainActivity) {
     var appChoices by remember { mutableStateOf<List<AttendanceApp>?>(null) }
     var appSearch by remember { mutableStateOf("") }
     var forwardedTag by remember { mutableStateOf<Tag?>(null) }
+    var providerPackage by remember { mutableStateOf(selectedAttendanceApp(activity)?.packageName ?: ATTENDANCE_PACKAGE) }
 
     fun refresh() {
         refreshJob?.cancel()
@@ -143,14 +148,14 @@ internal fun AttendanceGate(activity: MainActivity) {
     }
     val currentOpen by rememberUpdatedState<(Tag) -> Unit>({ openAttendance(it) })
     val currentRefresh by rememberUpdatedState<() -> Unit>({ refresh() })
-    DisposableEffect(activity, lifecycleOwner) {
+    DisposableEffect(activity, lifecycleOwner, providerPackage) {
         activity.onAttendanceTag = { currentOpen(it) }
         val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) { currentRefresh() }
         }
-        val registered = runCatching {
-            activity.contentResolver.registerContentObserver(attendanceUri, false, observer)
-        }.isSuccess
+        val registered = attendanceUris(providerPackage).map { uri ->
+            runCatching { activity.contentResolver.registerContentObserver(uri, false, observer) }.isSuccess
+        }.any { it }
         val lifecycleObserver = LifecycleEventObserver { _, event ->
             if(event == Lifecycle.Event.ON_RESUME) { launching=false; currentRefresh() }
         }
@@ -200,6 +205,7 @@ internal fun AttendanceGate(activity: MainActivity) {
                     items(choices.filter { it.label.contains(appSearch, true) || it.component.packageName.contains(appSearch, true) }, key={ it.component.flattenToString() }) { app ->
                         TextButton(onClick={
                             selectAttendanceApp(activity, app.component)
+                            providerPackage = app.component.packageName
                             val tag = forwardedTag
                             appChoices = null
                             forwardedTag = null

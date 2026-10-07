@@ -10,6 +10,8 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
         <package android:name="com.example.app" />
+        <package android:name="com.example.app.test" />
+        <provider android:authorities="com.example.app.test.mounter.attendance" />
         <provider android:authorities="com.example.app.mounter.attendance" />
     </queries>
 
