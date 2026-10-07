@@ -1,6 +1,8 @@
 package com.example.mounter
 
 import android.app.PendingIntent
+import android.content.ActivityNotFoundException
+import android.content.ComponentName
 import android.content.Intent
 import android.database.ContentObserver
 import android.net.Uri
@@ -100,8 +102,10 @@ internal fun AttendanceGate(activity: MainActivity) {
                     data = Uri.parse("mounter-attendance://return/$id")
                     addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 }, PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE)
+            // The companion's exported MainActivity is known from its manifest.
+            // A null launcher lookup does not prove the app is absent.
             val intent = activity.packageManager.getLaunchIntentForPackage(ATTENDANCE_PACKAGE)
-                ?: error("Додаток відміток com.example.app не встановлений або не має екрана запуску.")
+                ?: Intent().setComponent(ComponentName(ATTENDANCE_PACKAGE, "$ATTENDANCE_PACKAGE.MainActivity"))
             intent.apply {
                 action = ATTENDANCE_ACTION
                 // Keep the result relationship: launch intents normally contain NEW_TASK.
@@ -114,7 +118,12 @@ internal fun AttendanceGate(activity: MainActivity) {
         } catch(error: Exception) {
             callback?.cancel()
             launching = false
-            access = access.copy(state="locked", eventId="", message=error.message ?: "Не вдалося відкрити додаток відміток.")
+            val message = when(error) {
+                is ActivityNotFoundException -> "Не вдалося запустити com.example.app.MainActivity. Перевірте, що APP-TEST встановлено в тому самому профілі Android, що й Mounter."
+                is SecurityException -> "Android заборонив запуск APP-TEST. Перевірте android:exported=\"true\" для MainActivity та дозволи режиму кіоску."
+                else -> error.message ?: "Не вдалося відкрити додаток відміток."
+            }
+            access = access.copy(state="locked", eventId="", message=message)
         }
     }
     val currentOpen by rememberUpdatedState<(Tag) -> Unit>({ openAttendance(it) })
