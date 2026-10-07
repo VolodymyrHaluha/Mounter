@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import java.util.UUID
+import java.lang.ref.WeakReference
 
 /** Installed in the attendance app, not in Mounter. No NFC identity/photo is shared. */
 internal object MounterAttendanceBridge {
@@ -27,6 +28,19 @@ internal object MounterAttendanceBridge {
     private const val RETURN_SCHEDULED = "com.example.app.extra.MOUNTER_RETURN_SCHEDULED"
     val statusUri: Uri = Uri.parse("content://com.example.app.mounter.attendance/status")
     private const val PREFS = "mounter_attendance_access"
+    private var requestActivity = WeakReference<Activity>(null)
+
+    fun attach(activity: Activity) {
+        if(isTrustedRequest(activity)) requestActivity = WeakReference(activity)
+    }
+
+    fun detach(activity: Activity) {
+        if(requestActivity.get() === activity) requestActivity.clear()
+    }
+
+    private fun activeRequest(context: Context): Activity? =
+        (hostActivity(context)?.takeIf { isTrustedRequest(it) } ?: requestActivity.get())
+            ?.takeIf { !it.isFinishing && !it.isDestroyed && isTrustedRequest(it) }
 
     fun isRequest(intent: Intent): Boolean = intent.action == REQUEST_ACTION
 
@@ -89,7 +103,7 @@ internal object MounterAttendanceBridge {
     @Synchronized
     fun recordSaved(context: Context, record: AttendanceRecord) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val activity = hostActivity(context)?.takeIf { isTrustedRequest(it) }
+        val activity = activeRequest(context)
         val requestId = if(activity == null) "" else activity.intent.getStringExtra(REQUEST_ID)
             ?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString().also {
                 activity.intent.putExtra(REQUEST_ID, it)
@@ -121,7 +135,7 @@ internal object MounterAttendanceBridge {
             }
             context.contentResolver.notifyChange(statusUri, null)
         }
-        val activity = hostActivity(context)
+        val activity = activeRequest(context)
         val requestId = activity?.intent?.getStringExtra(REQUEST_ID).orEmpty()
         if(activity != null && isTrustedRequest(activity) && requestId.isNotBlank() &&
             prefs.getString("request_id", "") == requestId && !activity.intent.getBooleanExtra(RETURN_SCHEDULED, false)) {
