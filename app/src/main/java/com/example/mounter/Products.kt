@@ -1,6 +1,5 @@
 package com.example.mounter
 
-import android.content.Intent
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -15,7 +14,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -50,6 +48,7 @@ internal fun ProductsScreen(projects: List<Project>, onUpdate: (Project) -> Unit
     var adding by rememberSaveable { mutableStateOf(false) }
     var name by rememberSaveable { mutableStateOf("") }
     var objectId by rememberSaveable { mutableStateOf<String?>(null) }
+    var drawingId by rememberSaveable { mutableStateOf<String?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         val selection = target
         target = null
@@ -116,15 +115,7 @@ internal fun ProductsScreen(projects: List<Project>, onUpdate: (Project) -> Unit
                             if (block.drawings.isEmpty()) Text("Креслення ще не прикріплено", fontSize = 13.sp)
                             block.drawings.forEach { drawing ->
                                 Row(Modifier.fillMaxWidth()) {
-                                    TextButton(modifier = Modifier.weight(1f), onClick = {
-                                        try {
-                                            val uri = FileProvider.getUriForFile(context, "${context.packageName}.photos", File(drawing.path))
-                                            context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/pdf")
-                                                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
-                                        } catch (failure: android.content.ActivityNotFoundException) {
-                                            error = "Встановіть застосунок для перегляду PDF."
-                                        } catch (failure: Exception) { error = "Не вдалося відкрити креслення." }
-                                    }) { Text(drawing.name) }
+                                    TextButton(modifier = Modifier.weight(1f), onClick = { drawingId = drawing.id }) { Text(drawing.name) }
                                     TextButton(enabled = !busy, onClick = {
                                         try {
                                             onUpdate(project.copy(blocks = project.blocks.map {
@@ -144,6 +135,9 @@ internal fun ProductsScreen(projects: List<Project>, onUpdate: (Project) -> Unit
                 }
             }
         }
+    }
+    projects.flatMap { it.blocks }.flatMap { it.drawings }.find { it.id == drawingId }?.let { drawing ->
+        key(drawing.id) { PdfViewer(drawing, onClose = { drawingId = null }) }
     }
     if (adding) AlertDialog(onDismissRequest = { adding = false }, title = { Text("Новий виріб") }, text = {
         Column {
