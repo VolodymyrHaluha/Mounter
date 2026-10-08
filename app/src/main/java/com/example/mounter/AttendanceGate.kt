@@ -43,9 +43,11 @@ private fun attendanceUris(packageName: String): List<Uri> = listOf(
     Uri.parse("content://com.example.app.mounter.attendance/status")
 ).distinct()
 
-private data class AttendanceAccess(
+internal data class AttendanceAccess(
     val state: String = "locked",
     val eventId: String = "",
+    val workStartedAt: Long = 0,
+    val workEndedAt: Long = 0,
     val message: String = "Відмітьте «Прихід», щоб відкрити головне меню."
 ) {
     val allowed: Boolean get() = state == "arrival" && eventId.isNotBlank()
@@ -63,7 +65,9 @@ private fun readAttendanceAccess(activity: MainActivity): AttendanceAccess {
         AttendanceAccess(
             state=it.getString(it.getColumnIndexOrThrow("state")),
             eventId=it.getString(it.getColumnIndexOrThrow("event_id")),
-            message=it.getString(it.getColumnIndexOrThrow("message"))
+            message=it.getString(it.getColumnIndexOrThrow("message")),
+            workStartedAt=it.getColumnIndex("work_started_at").let { index -> if(index >= 0) it.getLong(index) else 0 },
+            workEndedAt=it.getColumnIndex("work_ended_at").let { index -> if(index >= 0) it.getLong(index) else 0 }
         )
     }
 }
@@ -114,7 +118,7 @@ internal fun AttendanceGate(activity: MainActivity) {
         refreshJob?.cancel()
         checking = false
         // Re-read the confirmed attendance state when returning to Mounter.
-        access = access.copy(state="locked", message="Очікуємо підтвердження нової відмітки від сервера.")
+        access = access.copy(state="locked", message="Завершіть нову відмітку в додатку відміток.")
         launching = true
         var callback: PendingIntent? = null
         try {
@@ -170,7 +174,7 @@ internal fun AttendanceGate(activity: MainActivity) {
     }
     val allowed = access.allowed
     Box(Modifier.fillMaxSize()) {
-        if(allowed) MounterApp()
+        if(allowed) MounterApp(access.workStartedAt, access.workEndedAt)
         if(!allowed || checking) {
             Image(painterResource(R.drawable.frop_logo_preview_01_1), contentDescription=null,
                 contentScale=ContentScale.Crop, modifier=Modifier.matchParentSize())
@@ -180,6 +184,9 @@ internal fun AttendanceGate(activity: MainActivity) {
                     Column(Modifier.padding(24.dp), verticalArrangement=Arrangement.spacedBy(16.dp)) {
                         Text("Відмітка перед початком роботи", style=MaterialTheme.typography.headlineSmall)
                         Text(if(checking) "Перевіряємо відмітку…" else access.message)
+                        if(access.state == "departure" && access.workStartedAt > 0) {
+                            Text("Робочі години: ${formatWorkHours(workDurationMillis(access.workStartedAt, access.workEndedAt, System.currentTimeMillis()))}")
+                        }
                         if(checking) LinearProgressIndicator(Modifier.fillMaxWidth())
                         Button(enabled=!launching, onClick={ openAttendance() }) {
                             Text("Відкрити додаток відміток")
