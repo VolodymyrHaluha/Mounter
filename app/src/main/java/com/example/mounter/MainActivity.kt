@@ -69,7 +69,8 @@ data class WorkBlock(
     val photos: List<PhotoEntry> = emptyList(),
     val name: String = "",
     val note: String = "",
-    val characteristics: String = ""
+    val characteristics: String = "",
+    val drawings: List<DrawingEntry> = emptyList()
 )
 data class Project(
     val name: String, val customer: String,
@@ -80,7 +81,7 @@ data class Project(
     // Keep the old name field readable for previously saved objects.
     val displayName: String get() = customer.ifBlank { name }
 }
-enum class Screen { HOME, OBJECTS, TEAM, OBJECT_DETAIL }
+enum class Screen { HOME, OBJECTS, TEAM, PRODUCTS, OBJECT_DETAIL }
 
 private class ProjectStore(private val context: Context) {
     private val file get() = File(context.filesDir, "objects.json")
@@ -101,7 +102,7 @@ private class ProjectStore(private val context: Context) {
                         // Preserve existing per-photo notes as one shared product note.
                         (0 until photos.length()).map {photos.getJSONObject(it).optionalText("note")}
                             .filter {it.isNotBlank()}.distinct().joinToString("\n\n")
-                    }, characteristics = b.optionalText("characteristics"))
+                    }, characteristics = b.optionalText("characteristics"), drawings = readDrawings(b))
                 }, customerId = p.optionalText("customer_id").takeIf { it.isNotBlank() })
         }
     }
@@ -113,7 +114,7 @@ private class ProjectStore(private val context: Context) {
                 val photos = JSONArray()
                 b.photos.forEach { photo -> photos.put(JSONObject().put("id", photo.id).put("path", photo.path)) }
                 blocks.put(JSONObject().put("id", b.id).put("name", b.name).put("note", b.note)
-                    .put("characteristics", b.characteristics).put("photos", photos))
+                    .put("characteristics", b.characteristics).put("photos", photos).put("drawings", drawingsJson(b.drawings)))
             }
             data.put(JSONObject().put("id", p.id).put("name", p.name).put("customer", p.customer).put("blocks", blocks).put("customer_id", p.customerId ?: JSONObject.NULL))
         }
@@ -278,6 +279,7 @@ fun MounterApp(workStartedAt: Long = 0, workEndedAt: Long = 0) {
                         open(project)
                     }
                     Screen.TEAM -> TeamScreen(teamMembers, employees, ::addEmployee, ::saveTeam)
+                    Screen.PRODUCTS -> ProductsScreen(projects, ::update)
                     Screen.OBJECT_DETAIL -> projects.find { it.id == selectedId }?.let { project ->
                         ObjectDetail(project, { screen = Screen.OBJECTS }, { block, photo -> openPhoto(project, block, photo) }, ::update)
                     }
@@ -300,7 +302,7 @@ fun MounterApp(workStartedAt: Long = 0, workEndedAt: Long = 0) {
 
 @Composable
 private fun NavigationRail(active: Screen, onSelect: (Screen) -> Unit) {
-    val items = listOf(Screen.HOME to "Головна", Screen.OBJECTS to "Об'єкти", Screen.TEAM to "Бригада")
+    val items = listOf(Screen.HOME to "Головна", Screen.OBJECTS to "Об'єкти", Screen.TEAM to "Бригада", Screen.PRODUCTS to "Вироби")
     Column(
         Modifier.width(116.dp).fillMaxHeight().background(Surface).padding(vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -332,6 +334,7 @@ private fun NavGlyph(screen: Screen, color: Color) {
         val s = size.minDimension
         when (screen) {
             Screen.HOME -> { drawRoundRect(color, Offset(s*.15f,s*.42f), Size(s*.7f,s*.48f), cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f)); val p=Path().apply{moveTo(s*.1f,s*.46f);lineTo(s*.5f,s*.1f);lineTo(s*.9f,s*.46f)};drawPath(p,color,style=Stroke(2.5f,cap=StrokeCap.Round)) }
+            Screen.PRODUCTS -> { drawRect(color, Offset(s*.2f,s*.1f), Size(s*.6f,s*.8f), style=Stroke(2.5f)); repeat(3) { drawLine(color, Offset(s*.32f,s*(.32f+it*.18f)), Offset(s*.68f,s*(.32f+it*.18f)), strokeWidth=2f) } }
             Screen.OBJECTS, Screen.OBJECT_DETAIL -> { drawRoundRect(color, Offset(s*.13f,s*.1f), Size(s*.74f,s*.8f), cornerRadius=androidx.compose.ui.geometry.CornerRadius(4f),style=Stroke(2.5f)); repeat(2){r->repeat(2){c->drawRect(color,Offset(s*(.26f+c*.31f),s*(.27f+r*.29f)),Size(s*.16f,s*.14f))}} }
             else -> { drawCircle(color,s*.17f,Offset(s*.5f,s*.3f));drawArc(color,200f,140f,false,Offset(s*.13f,s*.43f),Size(s*.74f,s*.52f),style=Stroke(3f,cap=StrokeCap.Round)) }
         }
