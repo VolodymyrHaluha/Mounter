@@ -145,8 +145,8 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         if(nfcAdapter?.isEnabled == true) {
             nfcAdapter?.enableReaderMode(this, this,
                 NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B or
-                    NfcAdapter.FLAG_READER_NFC_F or NfcAdapter.FLAG_READER_NFC_V or
-                    NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS, null)
+                        NfcAdapter.FLAG_READER_NFC_F or NfcAdapter.FLAG_READER_NFC_V or
+                        NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS, null)
         }
     }
 
@@ -189,7 +189,7 @@ fun MounterTheme(content: @Composable () -> Unit) {
 }
 
 @Composable
-fun MounterApp() {
+fun MounterApp(workStartedAt: Long = 0, workEndedAt: Long = 0) {
     val context = LocalContext.current
     val store = remember { ProjectStore(context) }
     var projects by remember { mutableStateOf(store.load()) }
@@ -270,7 +270,7 @@ fun MounterApp() {
             NavigationRail(screen) { screen = it }
             AnimatedContent(targetState = screen, label = "screen", modifier = Modifier.weight(1f)) { current ->
                 when (current) {
-                    Screen.HOME -> HomeScreen(projects, teamMembers, ::open, { screen = Screen.OBJECTS }, { screen = Screen.TEAM })
+                    Screen.HOME -> HomeScreen(projects, teamMembers, ::open, { screen = Screen.OBJECTS }, { screen = Screen.TEAM }, workStartedAt, workEndedAt)
                     Screen.OBJECTS -> ObjectsScreen(projects, clients, ::addClient, ::open, ::openPhoto) { project ->
                         val updated = projects + project
                         store.save(updated)
@@ -347,10 +347,12 @@ private fun PageHeader(title: String, subtitle: String, action: (@Composable () 
 }
 
 @Composable
-private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (Project) -> Unit, onObjects: () -> Unit, onTeam: () -> Unit) {
+private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (Project) -> Unit, onObjects: () -> Unit, onTeam: () -> Unit, workStartedAt: Long, workEndedAt: Long) {
     Column(Modifier.fillMaxSize().padding(28.dp, 22.dp, 28.dp, 18.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment=Alignment.CenterVertically) {
             Text("Об’єктів: ${projects.size}", color=Muted, fontSize=13.sp, modifier=Modifier.weight(1f))
+            WorkHoursTimer(workStartedAt, workEndedAt)
+            Spacer(Modifier.width(14.dp))
             Surface(shape=RoundedCornerShape(13.dp), color=Surface, border=androidx.compose.foundation.BorderStroke(1.dp,Border)) {
                 Text("Дані на пристрої", color=Muted, fontSize=12.sp, modifier=Modifier.padding(14.dp,9.dp))
             }
