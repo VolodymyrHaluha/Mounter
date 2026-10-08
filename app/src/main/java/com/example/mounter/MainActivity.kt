@@ -184,7 +184,7 @@ fun MounterTheme(content: @Composable () -> Unit) {
             outline = Border, error = Red
         ),
         typography = Typography(),
-        content = { CompositionLocalProvider(LocalContentColor provides Ink) { content() } }
+        content = { CompositionLocalProvider(LocalContentColor provides Ink) { InputEditingHost { content() } } }
     )
 }
 
@@ -429,9 +429,10 @@ private fun ObjectsScreen(projects: List<Project>, clients: List<Client>, onAddC
         }
     }
     if (creating) AlertDialog(
+        modifier=Modifier.dismissInputOnOutsideTouch(),
         onDismissRequest={creating=false}, title={Text("Новий об'єкт")},
         text={ Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
-            OutlinedTextField(customer, {customer=it;chosenClientId=null}, label={Text("Замовник")}, singleLine=true)
+            OutlinedTextField(customer, {customer=it;chosenClientId=null}, label={Text("Замовник")}, singleLine=true, modifier=Modifier.finishEditingOnOutsideTouch())
             if(chosenClient!=null) Text("Обрано: ${chosenClient.name}",color=Teal)
             else {
                 if(matches.isEmpty()) {
@@ -503,7 +504,7 @@ private fun TeamScreen(members: List<Worker>, employees: List<Worker>, onAddEmpl
     Column(Modifier.fillMaxSize().padding(28.dp,22.dp)) {
         PageHeader("Моя бригада", "У складі: ${members.size} • зміни зберігаються автоматично")
         Spacer(Modifier.height(16.dp))
-        OutlinedTextField(query,{query=it},label={Text("Пошук співробітника за ПІБ")},singleLine=true,modifier=Modifier.fillMaxWidth())
+        OutlinedTextField(query,{query=it},label={Text("Пошук співробітника за ПІБ")},singleLine=true,modifier=Modifier.fillMaxWidth().finishEditingOnOutsideTouch())
         Spacer(Modifier.height(16.dp))
         SurfaceCard(Modifier.fillMaxWidth().weight(1f)) {
             LazyColumn {
@@ -624,7 +625,7 @@ private fun ProductBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpda
                 label={Text("Назва виробу")},
                 placeholder={Text("Наприклад, шафа")},
                 singleLine=true,
-                modifier=Modifier.weight(1f)
+                modifier=Modifier.weight(1f).finishEditingOnOutsideTouch()
             )
             Spacer(Modifier.width(12.dp))
             OutlinedButton(enabled=!importing, onClick={gallery.launch("image/*")}) {Text(if(importing) "Додаємо фото…" else "Додати фото")}
@@ -643,7 +644,7 @@ private fun ProductBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpda
             onValueChange={text -> update(currentBlock.copy(characteristics=text))},
             label={Text("Характеристики")},
             placeholder={Text("Наприклад: розміри, матеріал, колір — у довільній формі")},
-            modifier=Modifier.fillMaxWidth(), minLines=3
+            modifier=Modifier.fillMaxWidth().finishEditingOnOutsideTouch(), minLines=3
         )
         error?.let {Text(it,color=Red)}
         Spacer(Modifier.height(12.dp))
@@ -677,7 +678,7 @@ private fun ProductBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpda
             onValueChange={note -> update(currentBlock.copy(note=note))},
             label={Text("Примітка до виробу")},
             placeholder={Text("Примітка для всіх фото виробу")},
-            modifier=Modifier.fillMaxWidth(), minLines=3
+            modifier=Modifier.fillMaxWidth().finishEditingOnOutsideTouch(), minLines=3
         )
     }
 }
