@@ -351,6 +351,8 @@ private fun PageHeader(title: String, subtitle: String, action: (@Composable () 
 
 @Composable
 private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (Project) -> Unit, onObjects: () -> Unit, onTeam: () -> Unit, workStartedAt: Long, workEndedAt: Long) {
+    var visibleProjectCount by rememberSaveable { mutableIntStateOf(5) }
+    val visibleProjects = projects.take(visibleProjectCount)
     Column(Modifier.fillMaxSize().padding(28.dp, 22.dp, 28.dp, 18.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment=Alignment.CenterVertically) {
             Text("Об’єктів: ${projects.size}", color=Muted, fontSize=13.sp, modifier=Modifier.weight(1f))
@@ -365,8 +367,21 @@ private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (
             SurfaceCard(Modifier.weight(1.65f).fillMaxHeight()) {
                 SectionTitle("Об'єкти", "Всі об'єкти", onObjects)
                 Spacer(Modifier.height(10.dp))
-                if (projects.isEmpty()) Text("Додайте об’єкт у вкладці «Об’єкти»",color=Muted)
-                projects.take(2).forEach { ProjectRow(it) { onProject(it) }; if (it != projects.take(2).last()) HorizontalDivider(color=Border) }
+                LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+                    if (projects.isEmpty()) item {
+                        Text("Додайте об’єкт у вкладці «Об’єкти»", color=Muted)
+                    }
+                    items(visibleProjects, key={it.id}) { project ->
+                        ProjectRow(project) { onProject(project) }
+                        if (project.id != visibleProjects.last().id) HorizontalDivider(color=Border)
+                    }
+                    if (visibleProjectCount < projects.size) item {
+                        TextButton(
+                            onClick={ visibleProjectCount = (visibleProjectCount + 5).coerceAtMost(projects.size) },
+                            modifier=Modifier.fillMaxWidth()
+                        ) { Text("Показати більше") }
+                    }
+                }
             }
             SurfaceCard(Modifier.weight(1f).fillMaxHeight()) {
                 SectionTitle("Моя бригада", "Керувати", onTeam)
