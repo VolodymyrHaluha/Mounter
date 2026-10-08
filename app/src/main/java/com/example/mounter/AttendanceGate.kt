@@ -204,9 +204,10 @@ internal fun AttendanceGate(activity: MainActivity) {
     }
     appChoices?.let { choices ->
         AlertDialog(onDismissRequest={ appChoices=null; forwardedTag=null },
+            modifier=Modifier.dismissInputOnOutsideTouch(),
             title={ Text("Виберіть додаток відміток") },
             text={ Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(value=appSearch, onValueChange={ appSearch=it }, label={ Text("Назва або пакет додатка") })
+                OutlinedTextField(value=appSearch, onValueChange={ appSearch=it }, label={ Text("Назва або пакет додатка") }, modifier=Modifier.finishEditingOnOutsideTouch())
                 if(choices.isEmpty()) Text("У цьому профілі Android немає доступних додатків. Установіть «Відмітка TEST» в тому самому профілі, що й «Монтажник».")
                 LazyColumn(Modifier.heightIn(max=320.dp)) {
                     items(choices.filter { it.label.contains(appSearch, true) || it.component.packageName.contains(appSearch, true) }, key={ it.component.flattenToString() }) { app ->
