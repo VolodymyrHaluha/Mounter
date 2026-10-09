@@ -63,7 +63,12 @@ private val CanvasColor = Color(0xFF17261F)
 private val Red = Color(0xFFD96C67)
 private val Border = Color(0xFF537265)
 
-data class PhotoEntry(val path: String, val id: String = UUID.randomUUID().toString())
+data class PhotoEntry(
+    val path: String,
+    val id: String = UUID.randomUUID().toString(),
+    val mimeType: String = "image/jpeg",
+    val displayName: String = File(path).name
+)
 data class WorkBlock(
     val id: String = UUID.randomUUID().toString(),
     val photos: List<PhotoEntry> = emptyList(),
@@ -97,7 +102,9 @@ private class ProjectStore(private val context: Context) {
                     val photos = b.getJSONArray("photos")
                     WorkBlock(b.getString("id"), (0 until photos.length()).map { k ->
                         val photo = photos.getJSONObject(k)
-                        PhotoEntry(path=photo.getString("path"), id=photo.getString("id"))
+                        PhotoEntry(path=photo.getString("path"), id=photo.getString("id"),
+                            mimeType=photo.optString("mime_type", "image/jpeg"),
+                            displayName=photo.optString("display_name", File(photo.getString("path")).name))
                     }, name = b.optString("name", ""), note = if(b.has("note")) b.optionalText("note") else {
                         // Preserve existing per-photo notes as one shared product note.
                         (0 until photos.length()).map {photos.getJSONObject(it).optionalText("note")}
@@ -112,7 +119,7 @@ private class ProjectStore(private val context: Context) {
             val blocks = JSONArray()
             p.blocks.forEach { b ->
                 val photos = JSONArray()
-                b.photos.forEach { photo -> photos.put(JSONObject().put("id", photo.id).put("path", photo.path)) }
+                b.photos.forEach { photo -> photos.put(JSONObject().put("id", photo.id).put("path", photo.path).put("mime_type", photo.mimeType).put("display_name", photo.displayName)) }
                 blocks.put(JSONObject().put("id", b.id).put("name", b.name).put("note", b.note)
                     .put("characteristics", b.characteristics).put("photos", photos).put("drawings", drawingsJson(b.drawings)))
             }
@@ -253,7 +260,7 @@ internal fun MounterApp(workStartedAt: Long = 0, workEndedAt: Long = 0, sessions
         val block = checkNotNull(project.blocks.find { it.id == selection[1] })
         val oldPhoto = checkNotNull(block.photos.find { it.id == selection[2] })
         val photos = if (newPath == null) block.photos.filterNot { it.id == oldPhoto.id }
-        else block.photos.map { if (it.id == oldPhoto.id) it.copy(path = newPath) else it }
+        else block.photos.map { if (it.id == oldPhoto.id) it.copy(path = newPath, mimeType = "image/jpeg", displayName = File(newPath).name) else it }
         update(project.copy(blocks = project.blocks.map { if (it.id == block.id) it.copy(photos = photos) else it }))
         // Remove the old file only after the changed object has been saved.
         val stillUsed = projects.any { p -> p.blocks.any { b -> b.photos.any { it.path == oldPhoto.path } } }
@@ -294,7 +301,9 @@ internal fun MounterApp(workStartedAt: Long = 0, workEndedAt: Long = 0, sessions
         val photo = projects.find { it.id == selection[0] }?.blocks
             ?.find { it.id == selection[1] }?.photos?.find { it.id == selection[2] }
         if (photo != null) key(selection) {
-            PhotoViewer(photo, onClose = { photoSelection = null },
+            if(!photo.mimeType.startsWith("image/")) FileViewer(photo,
+                onClose = { photoSelection = null }, onDelete = { changePhoto(null) })
+            else PhotoViewer(photo, onClose = { photoSelection = null },
                 onReplace = { changePhoto(it) }, onDelete = { changePhoto(null) })
         }
     }
@@ -432,7 +441,7 @@ private fun ObjectsScreen(projects: List<Project>, clients: List<Client>, onAddC
     val chosenClient = clients.find { it.id == chosenClientId }
     val matches = clients.filter { nameKey(it.name).contains(nameKey(customer)) }
     Column(Modifier.fillMaxSize().padding(28.dp,22.dp)) {
-        PageHeader("Об'єкти", "${projects.size} об'єктів • фото та примітки") {
+        PageHeader("Об'єкти", "${projects.size} об'єктів • медіа та примітки") {
             Button(onClick={ customer="";chosenClientId=null;creating=true }) { Text("Створити об'єкт") }
         }
         Spacer(Modifier.height(20.dp))
@@ -496,12 +505,12 @@ private fun ObjectCard(project: Project, modifier: Modifier, onPhoto: (WorkBlock
                     if(product.photos.isEmpty()) {
                         Box(Modifier.fillMaxWidth().height(160.dp).clip(RoundedCornerShape(14.dp))
                             .background(CanvasColor).clickable(onClick=onOpen), contentAlignment=Alignment.Center) {
-                            Text("Фото ще не додані", color=Muted)
+                            Text("Медіа ще не додані", color=Muted)
                         }
                     }
                     product.photos.forEach {photo ->
                         key(photo.id) {
-                            Box(Modifier.clickable { onPhoto(product, photo) }) { PhotoPreview(photo.path, height=160.dp) }
+                            Box(Modifier.clickable { onPhoto(product, photo) }) { MediaPreview(photo, height=160.dp) }
                         }
                     }
                     Text(product.note.ifBlank {"Примітка ще не додана"},
@@ -604,32 +613,49 @@ private fun ProductBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpda
         }
         pendingPath=null
     }
-    val gallery=rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+    val gallery=rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if(uris.isNotEmpty()) {
             importing=true
             error=null
             scope.launch {
+                val imported=mutableListOf<PhotoEntry>()
+                var committed=false
                 try {
-                    val imported=kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        uris.mapNotNull { uri ->
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        uris.forEach { uri ->
                             var target: File? = null
                             try {
-                                val file=File(context.filesDir,"photos/${UUID.randomUUID()}.jpg")
+                                val resolver=context.contentResolver
+                                val name=resolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                                    if(cursor.moveToFirst()) cursor.getString(0) else null
+                                } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "Файл"
+                                val mime=resolver.getType(uri) ?: android.webkit.MimeTypeMap.getSingleton()
+                                    .getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "application/octet-stream"
+                                val safeName=name.substringAfterLast('/').substringAfterLast('\\').takeUnless {it.isBlank() || it=="." || it==".."} ?: "Файл"
+                                val file=File(context.filesDir,"media/${UUID.randomUUID()}/$safeName")
                                     .also {it.parentFile?.mkdirs()}
                                 target=file
-                                context.contentResolver.openInputStream(uri)?.use {input ->
+                                resolver.openInputStream(uri)?.use {input ->
                                     file.outputStream().use {output -> input.copyTo(output)}
-                                } ?: error("Фото недоступне")
-                                PhotoEntry(file.absolutePath)
+                                } ?: error("Файл недоступний")
+                                imported.add(PhotoEntry(file.absolutePath, mimeType=mime, displayName=name))
+                            } catch(e: kotlinx.coroutines.CancellationException) {
+                                target?.delete()
+                                throw e
                             } catch(_: Exception) {
                                 target?.delete()
-                                null
                             }
                         }
                     }
                     if(imported.isNotEmpty()) update(currentBlock.copy(photos=currentBlock.photos+imported))
-                    if(imported.size<uris.size) error="Не вдалося додати ${uris.size-imported.size} фото. Спробуйте ще раз."
+                    committed=true
+                    if(imported.size<uris.size) error="Не вдалося додати ${uris.size-imported.size} файлів. Спробуйте ще раз."
+                } catch(e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch(_: Exception) {
+                    error="Не вдалося зберегти медіа. Спробуйте ще раз."
                 } finally {
+                    if(!committed) imported.forEach {File(it.path).delete()}
                     importing=false
                 }
             }
@@ -646,7 +672,7 @@ private fun ProductBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpda
                 modifier=Modifier.weight(1f).finishEditingOnOutsideTouch()
             )
             Spacer(Modifier.width(12.dp))
-            OutlinedButton(enabled=!importing, onClick={gallery.launch("image/*")}) {Text(if(importing) "Додаємо фото…" else "Додати фото")}
+            OutlinedButton(enabled=!importing, onClick={gallery.launch(arrayOf("*/*"))}) {Text(if(importing) "Додаємо медіа…" else "Додати медіа")}
             Spacer(Modifier.width(10.dp))
             Button(onClick={
                 try {
@@ -670,9 +696,9 @@ private fun ProductBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpda
             Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.spacedBy(14.dp)) {
                 repeat(3) {
                     Box(Modifier.weight(1f).height(200.dp).clip(RoundedCornerShape(14.dp))
-                        .background(CanvasColor).clickable(enabled=!importing) { gallery.launch("image/*") },
+                        .background(CanvasColor).clickable(enabled=!importing) { gallery.launch(arrayOf("*/*")) },
                         contentAlignment=Alignment.Center) {
-                        Text("Додати фото", color=Muted)
+                        Text("Додати медіа", color=Muted)
                     }
                 }
             }
@@ -683,7 +709,7 @@ private fun ProductBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpda
                 rowPhotos.forEach {photo ->
                     key(photo.id) {
                         Box(Modifier.weight(1f).clickable {onPhoto(photo)}) {
-                            PhotoPreview(photo.path,height=200.dp)
+                            MediaPreview(photo,height=200.dp)
                         }
                     }
                 }
@@ -695,10 +721,57 @@ private fun ProductBlock(block: WorkBlock, onPhoto: (PhotoEntry) -> Unit, onUpda
             value=block.note,
             onValueChange={note -> update(currentBlock.copy(note=note))},
             label={Text("Примітка до виробу")},
-            placeholder={Text("Примітка для всіх фото виробу")},
+            placeholder={Text("Примітка для всіх медіа виробу")},
             modifier=Modifier.fillMaxWidth().finishEditingOnOutsideTouch(), minLines=3
         )
     }
+}
+
+@Composable
+private fun MediaPreview(media: PhotoEntry, height: androidx.compose.ui.unit.Dp) {
+    if(media.mimeType.startsWith("image/")) PhotoPreview(media.path, height)
+    else Column(
+        Modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(14.dp))
+            .background(CanvasColor).padding(16.dp),
+        verticalArrangement=Arrangement.Center, horizontalAlignment=Alignment.CenterHorizontally
+    ) {
+        Text(when {
+            media.mimeType.startsWith("video/") -> "▶ Відео"
+            media.mimeType.startsWith("audio/") -> "♫ Аудіо"
+            else -> "Файл"
+        }, color=Teal, fontWeight=FontWeight.SemiBold)
+        Spacer(Modifier.height(10.dp))
+        Text(media.displayName, color=Ink, maxLines=3, overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+private fun FileViewer(media: PhotoEntry, onClose: () -> Unit, onDelete: () -> Unit) {
+    val context=LocalContext.current
+    var error by remember(media.id) {mutableStateOf<String?>(null)}
+    AlertDialog(
+        onDismissRequest=onClose,
+        title={Text(media.displayName)},
+        text={Column {
+            Text("Відкрити файл у відповідному застосунку на пристрої.")
+            error?.let {Text(it,color=Red)}
+        }},
+        confirmButton={TextButton(onClick={
+            try {
+                val uri=FileProvider.getUriForFile(context,"${context.packageName}.photos",File(media.path))
+                context.startActivity(Intent.createChooser(
+                    Intent(Intent.ACTION_VIEW).setDataAndType(uri,media.mimeType)
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "Відкрити медіа"
+                ).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+            } catch(_: Exception) {error="Не вдалося відкрити файл. Перевірте наявність відповідного застосунку."}
+        }) {Text("Відкрити")}},
+        dismissButton={Row {
+            TextButton(onClick={
+                try {onDelete()} catch(_: Exception) {error="Не вдалося видалити файл. Спробуйте ще раз."}
+            }) {Text("Видалити",color=Red)}
+            TextButton(onClick=onClose) {Text("Закрити")}
+        }}
+    )
 }
 
 @Composable
