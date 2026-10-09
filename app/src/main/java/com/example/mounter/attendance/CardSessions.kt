@@ -1,30 +1,15 @@
 package com.example.mounter.attendance
 
-/** Read-only projection of APP-TEST's authoritative LOCAL snapshot. Mounter never toggles a card. */
+/** Data received from APP-TEST. No database or server confirmation is required. */
 data class CardWorkSession(
     val cardId: String,
-    val eventId: String = "",
-    val lastConfirmedAction: String = "",
     val startedAt: Long = 0,
     val endedAt: Long = 0,
-    val pendingEventId: String = "",
-    val pendingAt: Long = 0,
     val cardKey: String = cardId,
-    val employeeId: Long? = null,
-    val confirmationSource: String = "",
-    val serverRevision: Long = 0,
-    val syncStatus: String = "unconfirmed"
+    val employeeId: Long? = null
 ) {
-    val active: Boolean
-        get() = confirmationSource == "LOCAL" &&
-                serverRevision > 0 &&
-                (employeeId ?: 0L) > 0 &&
-                syncStatus == "confirmed" &&
-                eventId.isNotBlank() &&
-                lastConfirmedAction == "check_in" &&
-                startedAt > 0 &&
-                endedAt == 0L &&
-                pendingEventId.isBlank()
+    val workerKey: String get() = employeeId?.let { "employee:$it" } ?: "card:$cardKey"
+    val active: Boolean get() = startedAt > 0 && endedAt == 0L
 }
 
 fun hasActiveAttendance(sessions: List<CardWorkSession>): Boolean = sessions.any { it.active }
