@@ -5,19 +5,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AttendanceAccessTest {
-    private val active = CardWorkSession("B", "in-b", "check_in", 2000,
-        employeeId=2, confirmationSource="LOCAL", serverRevision=1, syncStatus="confirmed")
-    @Test fun lastGlobalDepartureCannotLockAnotherActiveCard() {
-        assertTrue(AttendanceAccess(sessions=listOf(active), state="departure", eventId="out-a").allowed)
+    private val arrival = CardWorkSession("Іван", startedAt=2000)
+    @Test fun arrivalNeedsOnlyReceivedTimes() {
+        assertTrue(AttendanceAccess(sessions=listOf(arrival)).allowed)
     }
-    @Test fun oldSingleEventArrivalCannotGrantAccess() {
-        assertFalse(AttendanceAccess(state="arrival", eventId="old").allowed)
+    @Test fun messageAloneDoesNotInventArrival() {
+        assertFalse(AttendanceAccess(message="Прихід").allowed)
     }
-    @Test fun pendingOnlyCardLocksEverySectionThroughSharedGate() {
-        assertFalse(AttendanceAccess(sessions=listOf(active.copy(pendingEventId="out-b", pendingAt=3000))).allowed)
+    @Test fun departureStopsTimer() {
+        assertFalse(AttendanceAccess(sessions=listOf(arrival.copy(endedAt=3000))).allowed)
     }
-    @Test fun statusReadFailurePreservesConfirmedSnapshot() {
-        val access = AttendanceAccess(sessions=listOf(active))
-        assertTrue(access.copy(message="Немає зв’язку").allowed)
+    @Test fun dataReadFailurePreservesReceivedTimes() {
+        val access=AttendanceAccess(sessions=listOf(arrival))
+        assertTrue(access.copy(readError="Немає зв’язку").allowed)
     }
 }

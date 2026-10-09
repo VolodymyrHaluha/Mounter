@@ -1,36 +1,23 @@
 package com.example.mounter
 
-// Keep the authoritative model explicit even if an older same-named class exists in this package.
 import com.example.mounter.attendance.CardWorkSession as AttendanceCardSession
 import org.json.JSONArray
 
-internal const val ATTENDANCE_CONTRACT_VERSION = 2
-
-internal class AttendanceContractException(message: String, cause: Throwable? = null) :
-    IllegalStateException(message, cause)
-
-internal fun parseCardRows(raw: String): List<AttendanceCardSession> = try {
+internal fun parseCardRows(raw: String): List<AttendanceCardSession> {
     val rows = JSONArray(raw)
-    (0 until rows.length()).map { index ->
+    return (0 until rows.length()).mapNotNull { index ->
         val row = rows.getJSONObject(index)
-        val syncStatus = row.getString("sync_status")
+        val label = row.optionalText("employee_name").ifBlank {
+            row.optionalText("card_label").ifBlank { row.optionalText("card_id") }
+        }
+        val startedAt = row.optLong("work_started_at", row.optLong("started_at"))
+        if(label.isBlank() || startedAt <= 0) return@mapNotNull null
         AttendanceCardSession(
-            cardId = row.getString("card_label"),
-            cardKey = row.getString("card_key"),
+            cardId = label,
+            cardKey = row.optionalText("card_key").ifBlank { label },
             employeeId = row.optLong("employee_id").takeIf { it > 0 },
-            eventId = row.getString("last_confirmed_event_id"),
-            lastConfirmedAction = row.getString("last_confirmed_action"),
-            startedAt = row.getLong("work_started_at"),
-            endedAt = row.getLong("work_ended_at"),
-            confirmationSource = row.getString("confirmation_source"),
-            serverRevision = row.getLong("server_revision"),
-            syncStatus = syncStatus,
-            pendingEventId = if (syncStatus == "pending_confirmation") "pending" else ""
+            startedAt = startedAt,
+            endedAt = row.optLong("work_ended_at", row.optLong("ended_at"))
         )
     }
-} catch(error: Exception) {
-    throw AttendanceContractException(
-        "APP-TEST повернув неповний стан карток v$ATTENDANCE_CONTRACT_VERSION: ${error.javaClass.simpleName}.",
-        error
-    )
 }

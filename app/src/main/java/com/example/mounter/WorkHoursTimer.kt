@@ -14,8 +14,8 @@ import kotlinx.coroutines.delay
 internal fun orderedCardSessions(sessions: List<CardWorkSession>): List<CardWorkSession> = sessions
     .filter { it.active }
     .sortedByDescending { it.startedAt }
-    .distinctBy { it.employeeId }
-    .sortedWith(compareBy<CardWorkSession> { it.cardId }.thenBy { it.employeeId })
+    .distinctBy { it.workerKey }
+    .sortedWith(compareBy<CardWorkSession> { it.cardId }.thenBy { it.workerKey })
 
 @Composable
 internal fun CardWorkHours(sessions: List<CardWorkSession>) {
@@ -35,7 +35,7 @@ internal fun CardWorkHours(sessions: List<CardWorkSession>) {
             Text("Ще немає працівників, які відмітили прихід.", style=MaterialTheme.typography.bodySmall,
                 color=MaterialTheme.colorScheme.onSurfaceVariant)
         } else LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement=Arrangement.spacedBy(12.dp)) {
-            items(active, key={checkNotNull(it.employeeId)}) { session ->
+            items(active, key={it.workerKey}) { session ->
                 Surface(shape=RoundedCornerShape(14.dp), color=MaterialTheme.colorScheme.surfaceVariant,
                     modifier=Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement=Arrangement.spacedBy(8.dp)) {

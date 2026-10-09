@@ -197,7 +197,7 @@ fun MounterTheme(content: @Composable () -> Unit) {
 }
 
 @Composable
-internal fun MounterApp(workStartedAt: Long = 0, workEndedAt: Long = 0, sessions: List<com.example.mounter.attendance.CardWorkSession> = emptyList()) {
+internal fun MounterApp(sessions: List<com.example.mounter.attendance.CardWorkSession> = emptyList()) {
     val context = LocalContext.current
     val store = remember { ProjectStore(context) }
     var projects by remember { mutableStateOf(store.load()) }

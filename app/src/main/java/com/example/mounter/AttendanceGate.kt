@@ -48,10 +48,6 @@ private fun attendanceUris(packageName: String): List<Uri> = listOf(
 internal data class AttendanceAccess(
     val sessions: List<AttendanceCardSession> = emptyList(),
     val readError: String? = null,
-    val state: String = "locked",
-    val eventId: String = "",
-    val workStartedAt: Long = 0,
-    val workEndedAt: Long = 0,
     val message: String = "Відмітьте «Прихід», щоб відкрити головне меню."
 ) {
     val allowed: Boolean get() = hasActiveAttendance(sessions)
@@ -66,18 +62,19 @@ private fun readAttendanceAccess(activity: MainActivity): AttendanceAccess {
         ?: error("Оновіть додаток відміток: він ще не підтримує зв’язок із Mounter.")
     return cursor.use {
         check(it.moveToFirst()) { "Додаток відміток не повернув стан." }
-        val versionIndex = it.getColumnIndex("contract_version")
-        if(versionIndex < 0 || it.getInt(versionIndex) != ATTENDANCE_CONTRACT_VERSION) throw AttendanceContractException(
-            "Несумісна версія інтеграції. Установіть узгоджені версії APP-TEST і Mounter.")
+        // This endpoint is only a data transport; no status or server metadata is checked.
+        val sessionsIndex = it.getColumnIndex("sessions")
         val cardsIndex = it.getColumnIndex("cards")
-        if(cardsIndex < 0) throw AttendanceContractException("APP-TEST не надає повний стан карток v2.")
-        // Publish the current card snapshot atomically; past attendance is not used by Mounter.
-        val sessions = parseCardRows(it.getString(cardsIndex))
+        val sessions = when {
+            sessionsIndex >= 0 -> parseCardRows(it.getString(sessionsIndex) ?: "[]")
+            cardsIndex >= 0 -> parseCardRows(it.getString(cardsIndex) ?: "[]")
+            else -> emptyList()
+        }
+        val messageIndex = it.getColumnIndex("message")
         AttendanceAccess(
             sessions=sessions,
-            state=it.getString(it.getColumnIndexOrThrow("state")),
-            eventId=it.getString(it.getColumnIndexOrThrow("event_id")),
-            message=it.getString(it.getColumnIndexOrThrow("message"))
+            message=if(messageIndex >= 0) it.getString(messageIndex).orEmpty()
+                else "Відмітьте «Прихід», щоб відкрити головне меню."
         )
     }
 }
@@ -102,11 +99,8 @@ internal fun AttendanceGate(activity: MainActivity) {
             try {
                 access = withContext(Dispatchers.IO) { readAttendanceAccess(activity) }
             } catch(error: kotlinx.coroutines.CancellationException) { throw error }
-            catch(error: AttendanceContractException) {
-                access = AttendanceAccess(message=error.message.orEmpty())
-            }
             catch(error: Exception) {
-                access = access.copy(readError="Не вдалося оновити відмітки. Показано останній підтверджений стан.", message=error.message ?: "Немає зв’язку з додатком відміток. Установіть його версію з підтримкою Mounter.")
+                access = access.copy(readError="Не вдалося оновити відмітки. Показано останні отримані дані.", message=error.message ?: "Немає зв’язку з додатком відміток. Установіть його версію з підтримкою Mounter.")
             } finally { checking = false }
         }
     }
@@ -130,8 +124,7 @@ internal fun AttendanceGate(activity: MainActivity) {
         }
         refreshJob?.cancel()
         checking = false
-        // Re-read the confirmed attendance state when returning to Mounter.
-        // Keep the last confirmed snapshot until the provider publishes a new one.
+        // Receive updated times from APP-TEST after returning; keep existing timers during the transfer.
         launching = true
         var callback: PendingIntent? = null
         try {
@@ -187,7 +180,7 @@ internal fun AttendanceGate(activity: MainActivity) {
     }
     val allowed = access.allowed
     Box(Modifier.fillMaxSize()) {
-        if(allowed) MounterApp(access.workStartedAt, access.workEndedAt, access.sessions)
+        if(allowed) MounterApp(sessions=access.sessions)
         if(allowed && access.readError != null) {
             Text(access.readError.orEmpty(), modifier=Modifier.align(Alignment.BottomCenter).background(MaterialTheme.colorScheme.surface).padding(8.dp))
         }

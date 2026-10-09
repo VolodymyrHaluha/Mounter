@@ -6,39 +6,42 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AttendanceContractTest {
-    private fun row()=JSONObject().put("card_label","001245").put("card_key","hash").put("employee_id",1)
-        .put("last_confirmed_event_id","uuid").put("last_confirmed_action","check_in").put("work_started_at",1000)
-        .put("work_ended_at",0).put("confirmation_source","LOCAL").put("server_revision",42).put("sync_status","confirmed")
-    @Test fun emptyCacheIsValidAndLocked() { assertFalse(AttendanceAccess(sessions=parseCardRows("[]")).allowed) }
-    @Test fun validSnapshotOpensAndPendingDoesNot() {
-        val rows=JSONArray().put(row()).toString()
-        assertTrue(AttendanceAccess(sessions=parseCardRows(rows)).allowed)
-        assertFalse(AttendanceAccess(sessions=parseCardRows(JSONArray().put(row().put("sync_status","pending_confirmation")).toString())).allowed)
+    private fun row()=JSONObject().put("card_label","Іван").put("card_key","card-a")
+        .put("employee_id",1).put("work_started_at",1000).put("work_ended_at",0)
+
+    @Test fun timesWithoutDatabaseMetadataOpenApp() {
+        assertTrue(AttendanceAccess(sessions=parseCardRows(JSONArray().put(row()).toString())).allowed)
     }
-    @Test(expected=AttendanceContractException::class) fun missingFieldsAreFormatError() { parseCardRows("[{}]") }
-    @Test fun unconfirmedSnapshotCannotOpen() {
-        assertFalse(AttendanceAccess(sessions=parseCardRows(JSONArray().put(row().put("confirmation_source","").put("server_revision",0)).toString())).allowed)
+    @Test fun globalArrivalNeedsNoLocalConfirmation() {
+        val data=row().put("confirmation_source","GLOBAL").put("server_revision",0)
+            .put("sync_status","pending_confirmation")
+        assertTrue(AttendanceAccess(sessions=parseCardRows(JSONArray().put(data).toString())).allowed)
     }
-    @Test fun parsesAuthoritativeModelFields() {
-        val session = parseCardRows(JSONArray().put(row()).toString()).single()
-        assertEquals("001245", session.cardId)
-        assertEquals("hash", session.cardKey)
+    @Test fun legacySessionsWithoutEmployeeIdHaveTheirOwnTimers() {
+        val data=JSONArray()
+            .put(JSONObject().put("card_id","Іван").put("started_at",1000))
+            .put(JSONObject().put("card_id","Олена").put("started_at",2000))
+        assertEquals(2, orderedCardSessions(parseCardRows(data.toString())).size)
+    }
+    @Test fun employeeNameAndReceivedTimesArePreserved() {
+        val session=parseCardRows(JSONArray().put(row().put("employee_name","Іван Петренко")).toString()).single()
+        assertEquals("Іван Петренко", session.cardId)
+        assertEquals("card-a", session.cardKey)
         assertEquals(1L, session.employeeId)
-        assertEquals("LOCAL", session.confirmationSource)
-        assertEquals(42L, session.serverRevision)
-        assertEquals("confirmed", session.syncStatus)
+        assertEquals(1000L, session.startedAt)
     }
-    @Test fun departureKeepsOtherConfirmedCardActive() {
-        val departed = row().put("card_key", "a").put("employee_id", 2)
-            .put("last_confirmed_action", "check_out").put("work_ended_at", 3000)
-        val sessions = parseCardRows(JSONArray().put(departed).put(row()).toString())
-        assertTrue(AttendanceAccess(sessions = sessions, state = "departure").allowed)
-        assertFalse(AttendanceAccess(sessions = listOf(sessions.first())).allowed)
+    @Test fun emptyRowsDoNotInventArrival() {
+        assertTrue(parseCardRows("[{},{}]").isEmpty())
+        assertFalse(AttendanceAccess(sessions=parseCardRows("[]")).allowed)
     }
-    @Test fun malformedSecondCardRejectsWholeSnapshot() {
-        val error = assertThrows(AttendanceContractException::class.java) {
-            parseCardRows(JSONArray().put(row()).put(JSONObject()).toString())
-        }
-        assertNotNull(error.cause)
+    @Test fun departureClosesOnlyItsOwnTimer() {
+        val departed=row().put("work_ended_at",3000)
+        val other=row().put("employee_id",2).put("card_label","Олена")
+        val sessions=parseCardRows(JSONArray().put(departed).put(other).toString())
+        assertTrue(AttendanceAccess(sessions=sessions).allowed)
+        assertEquals(listOf(sessions.last()), orderedCardSessions(sessions))
+    }
+    @Test(expected=org.json.JSONException::class) fun brokenJsonIsAReadError() {
+        parseCardRows("broken")
     }
 }
