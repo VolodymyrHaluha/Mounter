@@ -32,6 +32,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
+import org.json.JSONArray
+import com.example.mounter.attendance.CardWorkSession
+import com.example.mounter.attendance.hasActiveAttendance
 
 private const val ATTENDANCE_PACKAGE = "com.example.app.test"
 private const val ATTENDANCE_ACTION = "com.example.app.action.MOUNTER_ATTENDANCE"
@@ -44,13 +47,16 @@ private fun attendanceUris(packageName: String): List<Uri> = listOf(
 ).distinct()
 
 internal data class AttendanceAccess(
+    val sessions: List<CardWorkSession> = emptyList(),
+    val history: List<CardWorkSession> = emptyList(),
+    val readError: String? = null,
     val state: String = "locked",
     val eventId: String = "",
     val workStartedAt: Long = 0,
     val workEndedAt: Long = 0,
     val message: String = "Відмітьте «Прихід», щоб відкрити головне меню."
 ) {
-    val allowed: Boolean get() = state == "arrival" && eventId.isNotBlank()
+    val allowed: Boolean get() = hasActiveAttendance(sessions)
 }
 
 private fun readAttendanceAccess(activity: MainActivity): AttendanceAccess {
@@ -62,12 +68,17 @@ private fun readAttendanceAccess(activity: MainActivity): AttendanceAccess {
         ?: error("Оновіть додаток відміток: він ще не підтримує зв’язок із Mounter.")
     return cursor.use {
         check(it.moveToFirst()) { "Додаток відміток не повернув стан." }
+        val versionIndex = it.getColumnIndex("contract_version")
+        if(versionIndex < 0 || it.getInt(versionIndex) != 2) throw AttendanceContractException(
+            "Несумісна версія інтеграції. Установіть узгоджені версії APP-TEST і Mounter.")
+        val cardsIndex = it.getColumnIndex("cards")
+        val historyIndex = it.getColumnIndex("history")
+        if(cardsIndex < 0 || historyIndex < 0) throw AttendanceContractException("APP-TEST не надає повний стан карток v2.")
         AttendanceAccess(
+            sessions=parseCardRows(it.getString(cardsIndex)), history=parseCardRows(it.getString(historyIndex)),
             state=it.getString(it.getColumnIndexOrThrow("state")),
             eventId=it.getString(it.getColumnIndexOrThrow("event_id")),
-            message=it.getString(it.getColumnIndexOrThrow("message")),
-            workStartedAt=it.getColumnIndex("work_started_at").let { index -> if(index >= 0) it.getLong(index) else 0 },
-            workEndedAt=it.getColumnIndex("work_ended_at").let { index -> if(index >= 0) it.getLong(index) else 0 }
+            message=it.getString(it.getColumnIndexOrThrow("message"))
         )
     }
 }
@@ -92,8 +103,11 @@ internal fun AttendanceGate(activity: MainActivity) {
             try {
                 access = withContext(Dispatchers.IO) { readAttendanceAccess(activity) }
             } catch(error: kotlinx.coroutines.CancellationException) { throw error }
+            catch(error: AttendanceContractException) {
+                access = AttendanceAccess(message=error.message.orEmpty())
+            }
             catch(error: Exception) {
-                access = access.copy(state="locked", eventId="", message=error.message ?: "Немає зв’язку з додатком відміток. Установіть його версію з підтримкою Mounter.")
+                access = access.copy(readError="Не вдалося оновити відмітки. Показано останній підтверджений стан.", message=error.message ?: "Немає зв’язку з додатком відміток. Установіть його версію з підтримкою Mounter.")
             } finally { checking = false }
         }
     }
@@ -118,7 +132,7 @@ internal fun AttendanceGate(activity: MainActivity) {
         refreshJob?.cancel()
         checking = false
         // Re-read the confirmed attendance state when returning to Mounter.
-        access = access.copy(state="locked", message="Завершіть нову відмітку в додатку відміток.")
+        // Keep the last confirmed snapshot until the provider publishes a new one.
         launching = true
         var callback: PendingIntent? = null
         try {
@@ -147,7 +161,7 @@ internal fun AttendanceGate(activity: MainActivity) {
                 is SecurityException -> "Android заборонив запуск APP-TEST. Перевірте android:exported=\"true\" для MainActivity та дозволи режиму кіоску."
                 else -> error.message ?: "Не вдалося відкрити додаток відміток."
             }
-            access = access.copy(state="locked", eventId="", message=message)
+            access = access.copy(message=message)
         }
     }
     val currentOpen by rememberUpdatedState<(Tag) -> Unit>({ openAttendance(it) })
@@ -174,8 +188,11 @@ internal fun AttendanceGate(activity: MainActivity) {
     }
     val allowed = access.allowed
     Box(Modifier.fillMaxSize()) {
-        if(allowed) MounterApp(access.workStartedAt, access.workEndedAt)
-        if(!allowed || checking) {
+        if(allowed) MounterApp(access.workStartedAt, access.workEndedAt, access.sessions + access.history)
+        if(allowed && access.readError != null) {
+            Text(access.readError.orEmpty(), modifier=Modifier.align(Alignment.BottomCenter).background(MaterialTheme.colorScheme.surface).padding(8.dp))
+        }
+        if(!allowed) {
             Image(painterResource(R.drawable.frop_logo_preview_01_1), contentDescription=null,
                 contentScale=ContentScale.Crop, modifier=Modifier.matchParentSize())
             Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background.copy(alpha=.4f)),
@@ -184,6 +201,7 @@ internal fun AttendanceGate(activity: MainActivity) {
                     Column(Modifier.padding(24.dp), verticalArrangement=Arrangement.spacedBy(16.dp)) {
                         Text("Відмітка перед початком роботи", style=MaterialTheme.typography.headlineSmall)
                         Text(if(checking) "Перевіряємо відмітку…" else access.message)
+                        if((access.sessions + access.history).isNotEmpty()) CardWorkHours(access.sessions + access.history)
                         if(access.state == "departure" && access.workStartedAt > 0) {
                             Text("Робочі години: ${formatWorkHours(workDurationMillis(access.workStartedAt, access.workEndedAt, System.currentTimeMillis()))}")
                         }
@@ -213,6 +231,7 @@ internal fun AttendanceGate(activity: MainActivity) {
                     items(choices.filter { it.label.contains(appSearch, true) || it.component.packageName.contains(appSearch, true) }, key={ it.component.flattenToString() }) { app ->
                         TextButton(onClick={
                             selectAttendanceApp(activity, app.component)
+                            access = AttendanceAccess()
                             providerPackage = app.component.packageName
                             val tag = forwardedTag
                             appChoices = null

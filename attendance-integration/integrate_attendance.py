@@ -31,6 +31,7 @@ def add_reused_requests(text):
 
 
 def main():
+    raise SystemExit("Legacy installer disabled: install the paired APP-TEST/Mounter v2 sources and server migrations described in attendance-integration/README.md. No files changed.")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("project", type=Path, help="Attendance project root (or extracted src's parent)")
     args = parser.parse_args()
@@ -66,7 +67,7 @@ def main():
     anchor = "                    val record = photoPath?.let { addRecord(pending.action, pending.identification, it) }"
     text = replace_once(text, anchor, anchor + '''
                     if (record != null && pending.action == "NFC") {
-                        runCatching { MounterAttendanceBridge.recordSaved(context, record) }
+                        runCatching { MounterAttendanceBridge.recordSaved(context, record, pending.identification) }
                     }''', "persisted NFC record")
     text = replace_once(text, "                if (results.any { it.success }) {", '''                if (attemptedRecord.action == "NFC" && !attemptedRecord.syncErrorPhase) {
                     val action = results.firstNotNullOfOrNull { it.confirmedAction }
@@ -110,6 +111,7 @@ def main():
 
     additions = {java / name: Path(__file__).with_name(name).read_bytes()
                  for name in ["MounterAttendanceBridge.kt", "MounterServerConfirmation.kt", "MounterAttendanceContent.kt"]}
+    additions[java / "CardSessions.kt"] = (Path(__file__).parent.parent / "app/src/main/java/com/example/mounter/attendance/CardSessions.kt").read_bytes()
     backups = {path: path.with_name(path.name + ".before-mounter") for path in paths}
     if any(path.exists() for path in [*backups.values(), *additions]):
         raise SystemExit("A backup/addition already exists; no files changed.")

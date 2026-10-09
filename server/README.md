@@ -1,3 +1,5 @@
+> Поточне доповнення LOCAL/GLOBAL і міграції описано в [attendance-integration/README.md](../attendance-integration/README.md). Старий installer вимкнено; оновлюйте узгоджений повний серверний код.
+
 # Mounter
 
 Співробітники, замовники, склад бригади, об’єкти,
