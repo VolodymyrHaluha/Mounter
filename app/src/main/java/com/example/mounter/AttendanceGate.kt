@@ -190,7 +190,7 @@ internal fun AttendanceGate(activity: MainActivity) {
     }
     val allowed = access.allowed
     Box(Modifier.fillMaxSize()) {
-        if(allowed) MounterApp(access.workStartedAt, access.workEndedAt, access.sessions + access.history)
+        if(allowed) MounterApp(access.workStartedAt, access.workEndedAt, access.sessions)
         if(allowed && access.readError != null) {
             Text(access.readError.orEmpty(), modifier=Modifier.align(Alignment.BottomCenter).background(MaterialTheme.colorScheme.surface).padding(8.dp))
         }
@@ -203,10 +203,6 @@ internal fun AttendanceGate(activity: MainActivity) {
                     Column(Modifier.padding(24.dp), verticalArrangement=Arrangement.spacedBy(16.dp)) {
                         Text("Відмітка перед початком роботи", style=MaterialTheme.typography.headlineSmall)
                         Text(if(checking) "Перевіряємо відмітку…" else access.message)
-                        if((access.sessions + access.history).isNotEmpty()) CardWorkHours(access.sessions + access.history)
-                        if(access.state == "departure" && access.workStartedAt > 0) {
-                            Text("Робочі години: ${formatWorkHours(workDurationMillis(access.workStartedAt, access.workEndedAt, System.currentTimeMillis()))}")
-                        }
                         if(checking) LinearProgressIndicator(Modifier.fillMaxWidth())
                         Button(enabled=!launching, onClick={ openAttendance() }) {
                             Text("Відкрити додаток відміток")
