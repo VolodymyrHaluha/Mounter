@@ -15,9 +15,16 @@ data class CardWorkSession(
     val serverRevision: Long = 0,
     val syncStatus: String = "unconfirmed"
 ) {
-    val active: Boolean get() = confirmationSource == "LOCAL" && serverRevision > 0 && employeeId != null && employeeId > 0 &&
-        syncStatus == "confirmed" && eventId.isNotBlank() && lastConfirmedAction == "check_in" &&
-        startedAt > 0 && endedAt == 0L && pendingEventId.isBlank()
+    val active: Boolean
+        get() = confirmationSource == "LOCAL" &&
+            serverRevision > 0 &&
+            (employeeId ?: 0L) > 0 &&
+            syncStatus == "confirmed" &&
+            eventId.isNotBlank() &&
+            lastConfirmedAction == "check_in" &&
+            startedAt > 0 &&
+            endedAt == 0L &&
+            pendingEventId.isBlank()
 }
 
 fun hasActiveAttendance(sessions: List<CardWorkSession>): Boolean = sessions.any { it.active }

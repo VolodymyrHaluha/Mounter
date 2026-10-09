@@ -32,8 +32,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
-import org.json.JSONArray
-import com.example.mounter.attendance.CardWorkSession
+import com.example.mounter.attendance.CardWorkSession as AttendanceCardSession
 import com.example.mounter.attendance.hasActiveAttendance
 
 private const val ATTENDANCE_PACKAGE = "com.example.app.test"
@@ -47,8 +46,8 @@ private fun attendanceUris(packageName: String): List<Uri> = listOf(
 ).distinct()
 
 internal data class AttendanceAccess(
-    val sessions: List<CardWorkSession> = emptyList(),
-    val history: List<CardWorkSession> = emptyList(),
+    val sessions: List<AttendanceCardSession> = emptyList(),
+    val history: List<AttendanceCardSession> = emptyList(),
     val readError: String? = null,
     val state: String = "locked",
     val eventId: String = "",
@@ -69,13 +68,16 @@ private fun readAttendanceAccess(activity: MainActivity): AttendanceAccess {
     return cursor.use {
         check(it.moveToFirst()) { "Додаток відміток не повернув стан." }
         val versionIndex = it.getColumnIndex("contract_version")
-        if(versionIndex < 0 || it.getInt(versionIndex) != 2) throw AttendanceContractException(
+        if(versionIndex < 0 || it.getInt(versionIndex) != ATTENDANCE_CONTRACT_VERSION) throw AttendanceContractException(
             "Несумісна версія інтеграції. Установіть узгоджені версії APP-TEST і Mounter.")
         val cardsIndex = it.getColumnIndex("cards")
         val historyIndex = it.getColumnIndex("history")
         if(cardsIndex < 0 || historyIndex < 0) throw AttendanceContractException("APP-TEST не надає повний стан карток v2.")
+        // Parse both lists before publishing a single snapshot; never clear all cards during refresh.
+        val sessions = parseCardRows(it.getString(cardsIndex))
+        val history = parseCardRows(it.getString(historyIndex))
         AttendanceAccess(
-            sessions=parseCardRows(it.getString(cardsIndex)), history=parseCardRows(it.getString(historyIndex)),
+            sessions=sessions, history=history,
             state=it.getString(it.getColumnIndexOrThrow("state")),
             eventId=it.getString(it.getColumnIndexOrThrow("event_id")),
             message=it.getString(it.getColumnIndexOrThrow("message"))
