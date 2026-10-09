@@ -31,6 +31,7 @@ def add_reused_requests(text):
 
 
 def main():
+    raise SystemExit("Legacy installer disabled: install the paired APP-TEST/Mounter v2 sources and server migrations described in attendance-integration/README.md. No files changed.")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("project", type=Path, help="Attendance project root (or extracted src's parent)")
     args = parser.parse_args()

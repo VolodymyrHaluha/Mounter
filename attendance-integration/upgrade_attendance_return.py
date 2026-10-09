@@ -5,6 +5,7 @@ from integrate_attendance import replace_once, add_reused_requests, MOUNTER_CONT
 
 
 def main():
+    raise SystemExit("Legacy installer disabled: install the paired APP-TEST/Mounter v2 sources and server migrations described in attendance-integration/README.md. No files changed.")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("project", type=Path)
     root = parser.parse_args().project.resolve()

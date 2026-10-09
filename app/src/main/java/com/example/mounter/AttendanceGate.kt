@@ -48,6 +48,8 @@ private fun attendanceUris(packageName: String): List<Uri> = listOf(
 
 internal data class AttendanceAccess(
     val sessions: List<CardWorkSession> = emptyList(),
+    val history: List<CardWorkSession> = emptyList(),
+    val readError: String? = null,
     val state: String = "locked",
     val eventId: String = "",
     val workStartedAt: Long = 0,
@@ -66,20 +68,17 @@ private fun readAttendanceAccess(activity: MainActivity): AttendanceAccess {
         ?: error("Оновіть додаток відміток: він ще не підтримує зв’язок із Mounter.")
     return cursor.use {
         check(it.moveToFirst()) { "Додаток відміток не повернув стан." }
-        val sessionsIndex = it.getColumnIndex("sessions")
-        check(sessionsIndex >= 0) { "Оновіть APP-TEST: потрібен сукупний стан карток із підтвердженням LOCAL." }
-        val rows = JSONArray(it.getString(sessionsIndex))
+        val versionIndex = it.getColumnIndex("contract_version")
+        if(versionIndex < 0 || it.getInt(versionIndex) != 2) throw AttendanceContractException(
+            "Несумісна версія інтеграції. Установіть узгоджені версії APP-TEST і Mounter.")
+        val cardsIndex = it.getColumnIndex("cards")
+        val historyIndex = it.getColumnIndex("history")
+        if(cardsIndex < 0 || historyIndex < 0) throw AttendanceContractException("APP-TEST не надає повний стан карток v2.")
         AttendanceAccess(
-            sessions=rows.let { json -> (0 until json.length()).map { index ->
-                val row = json.getJSONObject(index)
-                CardWorkSession(row.getString("card_id"), row.optString("event_id"), row.optString("action"),
-                    row.optLong("started_at"), row.optLong("ended_at"), row.optString("pending_id"), row.optLong("pending_at"))
-            } },
+            sessions=parseCardRows(it.getString(cardsIndex)), history=parseCardRows(it.getString(historyIndex)),
             state=it.getString(it.getColumnIndexOrThrow("state")),
             eventId=it.getString(it.getColumnIndexOrThrow("event_id")),
-            message=it.getString(it.getColumnIndexOrThrow("message")),
-            workStartedAt=it.getColumnIndex("work_started_at").let { index -> if(index >= 0) it.getLong(index) else 0 },
-            workEndedAt=it.getColumnIndex("work_ended_at").let { index -> if(index >= 0) it.getLong(index) else 0 }
+            message=it.getString(it.getColumnIndexOrThrow("message"))
         )
     }
 }
@@ -104,8 +103,11 @@ internal fun AttendanceGate(activity: MainActivity) {
             try {
                 access = withContext(Dispatchers.IO) { readAttendanceAccess(activity) }
             } catch(error: kotlinx.coroutines.CancellationException) { throw error }
+            catch(error: AttendanceContractException) {
+                access = AttendanceAccess(message=error.message.orEmpty())
+            }
             catch(error: Exception) {
-                access = access.copy(message=error.message ?: "Немає зв’язку з додатком відміток. Установіть його версію з підтримкою Mounter.")
+                access = access.copy(readError="Не вдалося оновити відмітки. Показано останній підтверджений стан.", message=error.message ?: "Немає зв’язку з додатком відміток. Установіть його версію з підтримкою Mounter.")
             } finally { checking = false }
         }
     }
@@ -186,7 +188,10 @@ internal fun AttendanceGate(activity: MainActivity) {
     }
     val allowed = access.allowed
     Box(Modifier.fillMaxSize()) {
-        if(allowed) MounterApp(access.workStartedAt, access.workEndedAt, access.sessions)
+        if(allowed) MounterApp(access.workStartedAt, access.workEndedAt, access.sessions + access.history)
+        if(allowed && access.readError != null) {
+            Text(access.readError.orEmpty(), modifier=Modifier.align(Alignment.BottomCenter).background(MaterialTheme.colorScheme.surface).padding(8.dp))
+        }
         if(!allowed) {
             Image(painterResource(R.drawable.frop_logo_preview_01_1), contentDescription=null,
                 contentScale=ContentScale.Crop, modifier=Modifier.matchParentSize())
@@ -196,7 +201,7 @@ internal fun AttendanceGate(activity: MainActivity) {
                     Column(Modifier.padding(24.dp), verticalArrangement=Arrangement.spacedBy(16.dp)) {
                         Text("Відмітка перед початком роботи", style=MaterialTheme.typography.headlineSmall)
                         Text(if(checking) "Перевіряємо відмітку…" else access.message)
-                        if(access.sessions.isNotEmpty()) CardWorkHours(access.sessions)
+                        if((access.sessions + access.history).isNotEmpty()) CardWorkHours(access.sessions + access.history)
                         if(access.state == "departure" && access.workStartedAt > 0) {
                             Text("Робочі години: ${formatWorkHours(workDurationMillis(access.workStartedAt, access.workEndedAt, System.currentTimeMillis()))}")
                         }

@@ -5,7 +5,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AttendanceAccessTest {
-    private val active = CardWorkSession("B", "in-b", "check_in", 2000)
+    private val active = CardWorkSession("B", "in-b", "check_in", 2000, employeeId=2, confirmationSource="LOCAL", serverRevision=1, syncStatus="confirmed")
     @Test fun lastGlobalDepartureCannotLockAnotherActiveCard() {
         assertTrue(AttendanceAccess(sessions=listOf(active), state="departure", eventId="out-a").allowed)
     }

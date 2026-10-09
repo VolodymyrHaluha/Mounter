@@ -20,9 +20,8 @@ import java.util.UUID
 import java.lang.ref.WeakReference
 import org.json.JSONArray
 import org.json.JSONObject
-import com.example.mounter.attendance.*
 
-/** Installed in APP-TEST. The provider shares card labels and session times, never photos. */
+/** Read-only card state projection for Mounter; photographs are never shared. */
 internal object MounterAttendanceBridge {
     const val MOUNTER_PACKAGE = "com.example.mounter"
     const val REQUEST_ACTION = "com.example.app.action.MOUNTER_ATTENDANCE"
@@ -30,7 +29,7 @@ internal object MounterAttendanceBridge {
     const val REQUEST_ID = "com.example.mounter.extra.ATTENDANCE_REQUEST_ID"
     private const val RETURN_SCHEDULED = "com.example.app.extra.MOUNTER_RETURN_SCHEDULED"
     val statusUri: Uri = Uri.parse("content://com.example.app.mounter.attendance/status")
-    private const val PREFS = "mounter_attendance_access"
+    private const val PREFS = "attendance"
     private var requestActivity = WeakReference<Activity>(null)
 
     fun attach(activity: Activity) {
@@ -93,120 +92,74 @@ internal object MounterAttendanceBridge {
         return tag
     }
 
-    // Capturing/cancelling a photo does not change confirmed attendance.
-    fun beginNfc(context: Context) = Unit
-
-    private fun sessions(context: Context): List<CardWorkSession> {
-        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("sessions", "[]")
-        val rows = JSONArray(raw)
-        return (0 until rows.length()).map { index ->
-            val row = rows.getJSONObject(index)
-            CardWorkSession(row.getString("card_id"), row.optString("event_id"),
-                row.optString("action"), row.optLong("started_at"), row.optLong("ended_at"),
-                row.optString("pending_id"), row.optLong("pending_at"),
-                row.optJSONArray("seen_ids")?.let { ids -> (0 until ids.length()).map { ids.getString(it) } }.orEmpty())
-        }
-    }
-
-    private fun encoded(rows: List<CardWorkSession>): String = JSONArray().apply {
-        rows.forEach { row -> put(JSONObject().apply {
-            put("card_id", row.cardId); put("event_id", row.eventId); put("action", row.lastConfirmedAction)
-            put("started_at", row.startedAt); put("ended_at", row.endedAt)
-            put("pending_id", row.pendingEventId); put("pending_at", row.pendingAt); put("seen_ids", JSONArray(row.seenEventIds))
-        }) }
-    }.toString()
+    // A cancelled capture is not an attendance event.
+    fun beginNfc(context: Context) { CardAttendanceStore.read(context) }
 
     @Synchronized
-    fun recordSaved(context: Context, record: AttendanceRecord, cardId: String) {
+    fun recordSaved(context: Context, record: AttendanceRecord) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val activity = activeRequest(context)
         val requestId = if(activity == null) "" else activity.intent.getStringExtra(REQUEST_ID)
             ?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString().also {
             activity.intent.putExtra(REQUEST_ID, it)
         }
-        val rows = saveCardEvent(sessions(context), cardId, record.externalUuid, System.currentTimeMillis())
-        check(prefs.edit().putString("sessions", encoded(rows))
-            .putLong("generation", prefs.getLong("generation", 0) + 1)
-            .putString("event_id", record.externalUuid).putString("state", "pending")
-            .putString("request_id", requestId)
-            .putString("device_name", record.deviceName).putString("device_model", record.deviceModel)
-            .putString("device_bluetooth", record.bluetoothName.orEmpty())
-            .putString("message", "Очікуємо підтвердження стану відмітки від сервера.").commit()) {
-            "Не вдалося зберегти ідентифікатор відмітки."
+        check(CardAttendanceStore.read(context).events.any { it.eventId == record.externalUuid }) {
+            "Відмітку ще не збережено на пристрої."
+        }
+        check(prefs.edit().putString("request_id", requestId).commit()) {
+            "Не вдалося зберегти запит повернення."
         }
         context.contentResolver.notifyChange(statusUri, null)
+        // Returning does not grant access; the provider remains authoritative.
+        scheduleReturn(context, record.externalUuid)
     }
 
-    /** Caller supplies the server's confirmed action for this exact uploaded event. */
-    @Synchronized
-    fun confirm(context: Context, eventId: String, action: String): Boolean {
+    private fun scheduleReturn(context: Context, eventId: String) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val before = sessions(context)
-        val rows = confirmCardEvent(before, eventId, action)
-        if(rows == before) return false
-        val state = when(action) {
-            "check_in" -> "arrival"
-            "check_out" -> "departure"
-            else -> return false
-        }
-        val message = if(state == "arrival") "Сервер підтвердив «Прихід»." else "Сервер підтвердив «Вихід». Відмітьте новий «Прихід», щоб відкрити меню."
-        check(prefs.edit().putString("sessions", encoded(rows))
-            .putLong("generation", prefs.getLong("generation", 0) + 1)
-            .putString("state", state).putString("message", message).commit()) {
-            "Не вдалося зберегти підтвердження сервера."
-        }
-        context.contentResolver.notifyChange(statusUri, null)
         val activity = activeRequest(context)
         val requestId = activity?.intent?.getStringExtra(REQUEST_ID).orEmpty()
-        if(activity != null && isTrustedRequest(activity) && requestId.isNotBlank() &&
+        if(activity != null && requestId.isNotBlank() &&
             prefs.getString("request_id", "") == requestId && !activity.intent.getBooleanExtra(RETURN_SCHEDULED, false)) {
             activity.intent.putExtra(RETURN_SCHEDULED, true)
             Handler(Looper.getMainLooper()).postDelayed({
                 if(!activity.isFinishing && !activity.isDestroyed &&
-                    prefs.getString("event_id", "") == eventId && prefs.getString("state", "") == state) {
+                    CardAttendanceStore.read(context).events.any { it.eventId == eventId }) {
                     returnToMounter(activity)
-                } else {
-                    activity.intent.removeExtra(RETURN_SCHEDULED)
-                }
+                } else activity.intent.removeExtra(RETURN_SCHEDULED)
             }, 1500)
         }
-        return true
     }
 
-    @Synchronized
-    fun notConfirmed(context: Context, eventId: String, message: String) {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        if(prefs.getString("event_id", "") != eventId) return
-        // A connection failure alone must not revoke a previously confirmed arrival.
-        if(prefs.getString("state", "") != "pending") return
-        if(prefs.getString("message", "") == message) return
-        check(prefs.edit().putString("state", "pending").putString("message", message).commit()) {
-            "Не вдалося зберегти стан відмітки."
+    fun confirmed(context: Context, eventId: String) { scheduleReturn(context, eventId) }
+
+    fun cards(context: Context, history: Boolean = false): Cursor {
+        val snapshot = CardAttendanceStore.read(context)
+        return MatrixCursor(arrayOf("contract_version", "generation", "card_key", "card_label", "employee_id",
+            "last_confirmed_event_id", "last_confirmed_action", "work_started_at", "work_ended_at",
+            "confirmation_status", "confirmation_source", "server_revision", "last_confirmed_at", "sync_status", "pending")).apply {
+            (if(history) snapshot.history else snapshot.cards).forEach { card ->
+                addRow(arrayOf<Any?>(ATTENDANCE_CONTRACT_VERSION, snapshot.generation, card.cardKey, card.cardLabel, card.employeeId,
+                    card.lastConfirmedEventId, card.lastConfirmedAction, card.workStartedAt, card.workEndedAt,
+                    if(card.confirmed) "confirmed" else "unconfirmed", card.confirmationSource, card.serverRevision,
+                    card.lastConfirmedAt, if(snapshot.pending(card)) "pending_confirmation" else card.syncStatus, if(!history && snapshot.pending(card)) 1 else 0))
+            }
         }
-        context.contentResolver.notifyChange(statusUri, null)
     }
-
-    @Synchronized
     fun status(context: Context): Cursor {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val rows = sessions(context)
-        val allowed = hasActiveAttendance(rows)
-        return MatrixCursor(arrayOf("state", "generation", "event_id", "message", "request_id", "sessions")).apply {
-            addRow(arrayOf<Any?>(
-                if(allowed) "arrival" else "locked", prefs.getLong("generation", 0),
-                rows.firstOrNull { it.active }?.eventId.orEmpty(),
-                if(allowed) "Доступ підтверджено LOCAL." else prefs.getString("message", "Відмітьте «Прихід», щоб відкрити меню."),
-                prefs.getString("request_id", ""), encoded(rows)
-            ))
-        }
-    }
-
-    @Synchronized
-    fun confirmationRequests(context: Context): List<MounterConfirmationRequest> {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        return sessions(context).filter { it.pendingEventId.isNotBlank() }.map {
-            MounterConfirmationRequest(it.pendingEventId, prefs.getString("device_name", "").orEmpty(),
-                prefs.getString("device_model", "").orEmpty(), prefs.getString("device_bluetooth", "").orEmpty())
+        val snapshot = CardAttendanceStore.read(context)
+        val active = snapshot.cards.firstOrNull { snapshot.allowed(it) }
+        val sessions = JSONArray().apply { snapshot.cards.forEach { card -> put(JSONObject().apply {
+            put("card_id", card.cardLabel); put("event_id", card.lastConfirmedEventId); put("action", if(card.confirmed) card.lastConfirmedAction else "")
+            put("started_at", card.workStartedAt); put("ended_at", card.workEndedAt)
+            put("pending_id", if(snapshot.pending(card)) "pending" else ""); put("pending_at", 0)
+        }) } }
+        return MatrixCursor(arrayOf("contract_version", "state", "generation", "event_id", "message", "request_id", "sessions", "history", "cards")).apply {
+            addRow(arrayOf<Any?>(ATTENDANCE_CONTRACT_VERSION, if(snapshot.allowed) "arrival" else "locked", snapshot.generation,
+                active?.lastConfirmedEventId.orEmpty(), if(snapshot.allowed) "Доступ підтверджено LOCAL."
+                else if(snapshot.events.any { it.unresolved }) snapshot.events.lastOrNull { it.unresolved && it.message.isNotBlank() }?.message
+                    ?: "Очікуємо остаточного підтвердження LOCAL."
+                else "Відмітьте «Прихід», щоб відкрити Mounter.", "", sessions.toString(), CardAttendanceStore.rowsJson(snapshot.history),
+                CardAttendanceStore.rowsJson(snapshot.cards.map { card -> if(snapshot.pending(card)) card.copy(syncStatus="pending_confirmation") else card })))
         }
     }
 
@@ -219,8 +172,13 @@ class MounterAttendanceProvider : ContentProvider() {
         val appContext = checkNotNull(context)
         val packages = appContext.packageManager.getPackagesForUid(Binder.getCallingUid()).orEmpty()
         check(MounterAttendanceBridge.MOUNTER_PACKAGE in packages) { "Цей стан доступний лише Mounter." }
-        require(uri == MounterAttendanceBridge.statusUri) { "Невідомий маршрут." }
-        return MounterAttendanceBridge.status(appContext)
+        require(uri.authority == MounterAttendanceBridge.statusUri.authority) { "Невідомий provider." }
+        return when(uri.path) {
+            "/status" -> MounterAttendanceBridge.status(appContext)
+            "/cards" -> MounterAttendanceBridge.cards(appContext)
+            "/history" -> MounterAttendanceBridge.cards(appContext, history=true)
+            else -> error("Невідомий маршрут.")
+        }.apply { setNotificationUri(appContext.contentResolver, uri) }
     }
     override fun getType(uri: Uri): String = "vnd.android.cursor.item/vnd.frop.mounter-attendance"
     override fun insert(uri: Uri, values: ContentValues?): Uri? = throw UnsupportedOperationException("Read only")
