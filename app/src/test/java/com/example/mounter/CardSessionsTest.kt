@@ -52,4 +52,12 @@ class CardSessionsTest {
         assertEquals(listOf(running), orderedCardSessions(listOf(departed, pending, running, unconfirmed)))
         assertTrue(orderedCardSessions(listOf(departed)).isEmpty())
     }
+    @Test fun oneHoursBlockPerEmployeeUsesLatestActiveArrival() {
+        val earlier = active("Іван", 1).copy(startedAt=1000)
+        val newer = active("Іван — інша картка", 1).copy(startedAt=2000)
+        val other = active("Олена", 2)
+        assertEquals(listOf(newer, other), orderedCardSessions(listOf(earlier, other, newer)))
+        assertEquals(listOf(newer, other), orderedCardSessions(listOf(newer, earlier, other)))
+    }
+
 }

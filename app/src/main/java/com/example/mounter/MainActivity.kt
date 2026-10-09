@@ -341,30 +341,33 @@ private fun HomeScreen(projects: List<Project>, onProject: (Project) -> Unit, on
     Column(Modifier.fillMaxSize().padding(28.dp, 22.dp, 28.dp, 18.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment=Alignment.CenterVertically) {
             Text("Об’єктів: ${projects.size}", color=Muted, fontSize=13.sp, modifier=Modifier.weight(1f))
-            CardWorkHours(sessions)
-            Spacer(Modifier.width(14.dp))
             Surface(shape=RoundedCornerShape(13.dp), color=Surface, border=androidx.compose.foundation.BorderStroke(1.dp,Border)) {
                 Text("Дані на пристрої", color=Muted, fontSize=12.sp, modifier=Modifier.padding(14.dp,9.dp))
             }
         }
         Spacer(Modifier.height(18.dp))
-        SurfaceCard(Modifier.fillMaxWidth().weight(1f)) {
-            SectionTitle("Об'єкти", "Всі об'єкти", onObjects)
-            Spacer(Modifier.height(10.dp))
-            LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
-                if (projects.isEmpty()) item {
-                    Text("Додайте об’єкт у вкладці «Об’єкти»", color=Muted)
+        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement=Arrangement.spacedBy(18.dp)) {
+            SurfaceCard(Modifier.weight(1.65f).fillMaxHeight()) {
+                SectionTitle("Об'єкти", "Всі об'єкти", onObjects)
+                Spacer(Modifier.height(10.dp))
+                LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+                    if (projects.isEmpty()) item {
+                        Text("Додайте об’єкт у вкладці «Об’єкти»", color=Muted)
+                    }
+                    items(visibleProjects, key={it.id}) { project ->
+                        ProjectRow(project) { onProject(project) }
+                        if (project.id != visibleProjects.last().id) HorizontalDivider(color=Border)
+                    }
+                    if (visibleProjectCount < projects.size) item {
+                        TextButton(
+                            onClick={ visibleProjectCount = (visibleProjectCount + 5).coerceAtMost(projects.size) },
+                            modifier=Modifier.fillMaxWidth()
+                        ) { Text("Показати більше") }
+                    }
                 }
-                items(visibleProjects, key={it.id}) { project ->
-                    ProjectRow(project) { onProject(project) }
-                    if (project.id != visibleProjects.last().id) HorizontalDivider(color=Border)
-                }
-                if (visibleProjectCount < projects.size) item {
-                    TextButton(
-                        onClick={ visibleProjectCount = (visibleProjectCount + 5).coerceAtMost(projects.size) },
-                        modifier=Modifier.fillMaxWidth()
-                    ) { Text("Показати більше") }
-                }
+            }
+            SurfaceCard(Modifier.weight(1f).fillMaxHeight()) {
+                CardWorkHours(sessions)
             }
         }
     }

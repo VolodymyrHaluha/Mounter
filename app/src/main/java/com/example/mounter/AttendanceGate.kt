@@ -47,7 +47,6 @@ private fun attendanceUris(packageName: String): List<Uri> = listOf(
 
 internal data class AttendanceAccess(
     val sessions: List<AttendanceCardSession> = emptyList(),
-    val history: List<AttendanceCardSession> = emptyList(),
     val readError: String? = null,
     val state: String = "locked",
     val eventId: String = "",
@@ -71,13 +70,11 @@ private fun readAttendanceAccess(activity: MainActivity): AttendanceAccess {
         if(versionIndex < 0 || it.getInt(versionIndex) != ATTENDANCE_CONTRACT_VERSION) throw AttendanceContractException(
             "Несумісна версія інтеграції. Установіть узгоджені версії APP-TEST і Mounter.")
         val cardsIndex = it.getColumnIndex("cards")
-        val historyIndex = it.getColumnIndex("history")
-        if(cardsIndex < 0 || historyIndex < 0) throw AttendanceContractException("APP-TEST не надає повний стан карток v2.")
-        // Parse both lists before publishing a single snapshot; never clear all cards during refresh.
+        if(cardsIndex < 0) throw AttendanceContractException("APP-TEST не надає повний стан карток v2.")
+        // Publish the current card snapshot atomically; past attendance is not used by Mounter.
         val sessions = parseCardRows(it.getString(cardsIndex))
-        val history = parseCardRows(it.getString(historyIndex))
         AttendanceAccess(
-            sessions=sessions, history=history,
+            sessions=sessions,
             state=it.getString(it.getColumnIndexOrThrow("state")),
             eventId=it.getString(it.getColumnIndexOrThrow("event_id")),
             message=it.getString(it.getColumnIndexOrThrow("message"))
