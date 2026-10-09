@@ -18,8 +18,11 @@ import android.os.Handler
 import android.os.Looper
 import java.util.UUID
 import java.lang.ref.WeakReference
+import org.json.JSONArray
+import org.json.JSONObject
+import com.example.mounter.attendance.*
 
-/** Installed in the attendance app, not in Mounter. No NFC identity/photo is shared. */
+/** Installed in APP-TEST. The provider shares card labels and session times, never photos. */
 internal object MounterAttendanceBridge {
     const val MOUNTER_PACKAGE = "com.example.mounter"
     const val REQUEST_ACTION = "com.example.app.action.MOUNTER_ATTENDANCE"
@@ -90,25 +93,41 @@ internal object MounterAttendanceBridge {
         return tag
     }
 
-    @Synchronized
-    fun beginNfc(context: Context) {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        check(prefs.edit().putLong("generation", prefs.getLong("generation", 0) + 1)
-            .putString("state", "pending").putString("event_id", "").putString("request_id", "")
-            .putString("message", "Відмітку ще не підтверджено сервером. Завершіть NFC-відмітку в додатку відміток.")
-            .commit()) { "Не вдалося зберегти стан доступу до Mounter." }
-        context.contentResolver.notifyChange(statusUri, null)
+    // Capturing/cancelling a photo does not change confirmed attendance.
+    fun beginNfc(context: Context) = Unit
+
+    private fun sessions(context: Context): List<CardWorkSession> {
+        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("sessions", "[]")
+        val rows = JSONArray(raw)
+        return (0 until rows.length()).map { index ->
+            val row = rows.getJSONObject(index)
+            CardWorkSession(row.getString("card_id"), row.optString("event_id"),
+                row.optString("action"), row.optLong("started_at"), row.optLong("ended_at"),
+                row.optString("pending_id"), row.optLong("pending_at"),
+                row.optJSONArray("seen_ids")?.let { ids -> (0 until ids.length()).map { ids.getString(it) } }.orEmpty())
+        }
     }
 
+    private fun encoded(rows: List<CardWorkSession>): String = JSONArray().apply {
+        rows.forEach { row -> put(JSONObject().apply {
+            put("card_id", row.cardId); put("event_id", row.eventId); put("action", row.lastConfirmedAction)
+            put("started_at", row.startedAt); put("ended_at", row.endedAt)
+            put("pending_id", row.pendingEventId); put("pending_at", row.pendingAt); put("seen_ids", JSONArray(row.seenEventIds))
+        }) }
+    }.toString()
+
     @Synchronized
-    fun recordSaved(context: Context, record: AttendanceRecord) {
+    fun recordSaved(context: Context, record: AttendanceRecord, cardId: String) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val activity = activeRequest(context)
         val requestId = if(activity == null) "" else activity.intent.getStringExtra(REQUEST_ID)
             ?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString().also {
             activity.intent.putExtra(REQUEST_ID, it)
         }
-        check(prefs.edit().putString("event_id", record.externalUuid).putString("state", "pending")
+        val rows = saveCardEvent(sessions(context), cardId, record.externalUuid, System.currentTimeMillis())
+        check(prefs.edit().putString("sessions", encoded(rows))
+            .putLong("generation", prefs.getLong("generation", 0) + 1)
+            .putString("event_id", record.externalUuid).putString("state", "pending")
             .putString("request_id", requestId)
             .putString("device_name", record.deviceName).putString("device_model", record.deviceModel)
             .putString("device_bluetooth", record.bluetoothName.orEmpty())
@@ -122,19 +141,21 @@ internal object MounterAttendanceBridge {
     @Synchronized
     fun confirm(context: Context, eventId: String, action: String): Boolean {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        if(eventId.isBlank() || prefs.getString("event_id", "") != eventId) return false
+        val before = sessions(context)
+        val rows = confirmCardEvent(before, eventId, action)
+        if(rows == before) return false
         val state = when(action) {
             "check_in" -> "arrival"
             "check_out" -> "departure"
             else -> return false
         }
         val message = if(state == "arrival") "Сервер підтвердив «Прихід»." else "Сервер підтвердив «Вихід». Відмітьте новий «Прихід», щоб відкрити меню."
-        if(prefs.getString("state", "") != state) {
-            check(prefs.edit().putString("state", state).putString("message", message).commit()) {
-                "Не вдалося зберегти підтвердження сервера."
-            }
-            context.contentResolver.notifyChange(statusUri, null)
+        check(prefs.edit().putString("sessions", encoded(rows))
+            .putLong("generation", prefs.getLong("generation", 0) + 1)
+            .putString("state", state).putString("message", message).commit()) {
+            "Не вдалося зберегти підтвердження сервера."
         }
+        context.contentResolver.notifyChange(statusUri, null)
         val activity = activeRequest(context)
         val requestId = activity?.intent?.getStringExtra(REQUEST_ID).orEmpty()
         if(activity != null && isTrustedRequest(activity) && requestId.isNotBlank() &&
@@ -165,25 +186,31 @@ internal object MounterAttendanceBridge {
         context.contentResolver.notifyChange(statusUri, null)
     }
 
+    @Synchronized
     fun status(context: Context): Cursor {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        return MatrixCursor(arrayOf("state", "generation", "event_id", "message", "request_id")).apply {
-            addRow(arrayOf(
-                prefs.getString("state", "locked"), prefs.getLong("generation", 0),
-                prefs.getString("event_id", ""),
-                prefs.getString("message", "Відмітьте «Прихід», щоб відкрити головне меню."),
-                prefs.getString("request_id", "")
+        val rows = sessions(context)
+        val allowed = hasActiveAttendance(rows)
+        return MatrixCursor(arrayOf("state", "generation", "event_id", "message", "request_id", "sessions")).apply {
+            addRow(arrayOf<Any?>(
+                if(allowed) "arrival" else "locked", prefs.getLong("generation", 0),
+                rows.firstOrNull { it.active }?.eventId.orEmpty(),
+                if(allowed) "Доступ підтверджено LOCAL." else prefs.getString("message", "Відмітьте «Прихід», щоб відкрити меню."),
+                prefs.getString("request_id", ""), encoded(rows)
             ))
         }
     }
 
-    fun confirmationRequest(context: Context): MounterConfirmationRequest? {
+    @Synchronized
+    fun confirmationRequests(context: Context): List<MounterConfirmationRequest> {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val eventId = prefs.getString("event_id", "").orEmpty()
-        if(eventId.isBlank()) return null
-        return MounterConfirmationRequest(eventId, prefs.getString("device_name", "").orEmpty(),
-            prefs.getString("device_model", "").orEmpty(), prefs.getString("device_bluetooth", "").orEmpty())
+        return sessions(context).filter { it.pendingEventId.isNotBlank() }.map {
+            MounterConfirmationRequest(it.pendingEventId, prefs.getString("device_name", "").orEmpty(),
+                prefs.getString("device_model", "").orEmpty(), prefs.getString("device_bluetooth", "").orEmpty())
+        }
     }
+
+
 }
 
 class MounterAttendanceProvider : ContentProvider() {

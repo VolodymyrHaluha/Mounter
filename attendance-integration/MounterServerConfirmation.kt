@@ -53,9 +53,10 @@ internal fun fetchMounterAction(request: MounterConfirmationRequest): String? {
 }
 
 internal suspend fun refreshMounterConfirmation(context: Context) {
-    val request = MounterAttendanceBridge.confirmationRequest(context) ?: return
-    val action = withContext(Dispatchers.IO) { runCatching { fetchMounterAction(request) }.getOrNull() }
-    if(action != null) MounterAttendanceBridge.confirm(context, request.eventId, action)
-    else MounterAttendanceBridge.notConfirmed(context, request.eventId,
-        "Сервер ще не підтвердив «Прихід/Вихід». Перевірте підключення та завершення імпорту відмітки на LOCAL.")
+    for(request in MounterAttendanceBridge.confirmationRequests(context)) {
+        val action = withContext(Dispatchers.IO) { runCatching { fetchMounterAction(request) }.getOrNull() }
+        if(action != null) MounterAttendanceBridge.confirm(context, request.eventId, action)
+        else MounterAttendanceBridge.notConfirmed(context, request.eventId,
+            "Сервер ще не підтвердив «Прихід/Вихід». Перевірте підключення та завершення імпорту відмітки на LOCAL.")
+    }
 }

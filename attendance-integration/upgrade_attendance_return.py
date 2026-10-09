@@ -17,6 +17,8 @@ def main():
     main_text = replace_once(main_text,
         "MounterAttendanceBridge.isRequest(intent) && callingPackage != MounterAttendanceBridge.MOUNTER_PACKAGE",
         "MounterAttendanceBridge.isRequest(intent) && !MounterAttendanceBridge.isTrustedRequest(this)", "request validation")
+    main_text = main_text.replace("MounterAttendanceBridge.recordSaved(context, record)",
+        "MounterAttendanceBridge.recordSaved(context, record, pending.identification)")
     old_content = '''        setContent { AppTheme { NetworkStatusScreen { callback ->
             onNfcTag = callback
             MounterAttendanceBridge.consumeForwardedTag(this)?.let { tag ->
@@ -41,19 +43,22 @@ def main():
     for path in [bridge_file, confirmation_file]:
         updates[path] = Path(__file__).with_name(path.name).read_bytes()
     content_file = java / "MounterAttendanceContent.kt"
+    model_file = java / "CardSessions.kt"
     backup_paths = {path: path.with_name(path.name + ".before-mounter-return-v2") for path in originals}
-    if content_file.exists() or any(path.exists() for path in backup_paths.values()):
+    if content_file.exists() or model_file.exists() or any(path.exists() for path in backup_paths.values()):
         raise SystemExit("A v2 backup/content file already exists; no files changed.")
     try:
         for path, backup in backup_paths.items():
             backup.write_bytes(originals[path])
         for path, data in updates.items():
             path.write_bytes(data)
+        model_file.write_bytes((Path(__file__).parent.parent / "app/src/main/java/com/example/mounter/attendance/CardSessions.kt").read_bytes())
         content_file.write_bytes(Path(__file__).with_name(content_file.name).read_bytes())
     except Exception:
         for path, data in originals.items():
             path.write_bytes(data)
         content_file.unlink(missing_ok=True)
+        model_file.unlink(missing_ok=True)
         raise
     print("Attendance return upgraded. Rebuild and install the attendance app; originals: *.before-mounter-return-v2.")
 

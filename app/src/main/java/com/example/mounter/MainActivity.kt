@@ -190,7 +190,7 @@ fun MounterTheme(content: @Composable () -> Unit) {
 }
 
 @Composable
-fun MounterApp(workStartedAt: Long = 0, workEndedAt: Long = 0) {
+internal fun MounterApp(workStartedAt: Long = 0, workEndedAt: Long = 0, sessions: List<com.example.mounter.attendance.CardWorkSession> = emptyList()) {
     val context = LocalContext.current
     val store = remember { ProjectStore(context) }
     var projects by remember { mutableStateOf(store.load()) }
@@ -271,7 +271,7 @@ fun MounterApp(workStartedAt: Long = 0, workEndedAt: Long = 0) {
             NavigationRail(screen) { screen = it }
             AnimatedContent(targetState = screen, label = "screen", modifier = Modifier.weight(1f)) { current ->
                 when (current) {
-                    Screen.HOME -> HomeScreen(projects, teamMembers, ::open, { screen = Screen.OBJECTS }, { screen = Screen.TEAM }, workStartedAt, workEndedAt)
+                    Screen.HOME -> HomeScreen(projects, teamMembers, ::open, { screen = Screen.OBJECTS }, { screen = Screen.TEAM }, workStartedAt, workEndedAt, sessions)
                     Screen.OBJECTS -> ObjectsScreen(projects, clients, ::addClient, ::open, ::openPhoto) { project ->
                         val updated = projects + project
                         store.save(updated)
@@ -350,13 +350,13 @@ private fun PageHeader(title: String, subtitle: String, action: (@Composable () 
 }
 
 @Composable
-private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (Project) -> Unit, onObjects: () -> Unit, onTeam: () -> Unit, workStartedAt: Long, workEndedAt: Long) {
+private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (Project) -> Unit, onObjects: () -> Unit, onTeam: () -> Unit, workStartedAt: Long, workEndedAt: Long, sessions: List<com.example.mounter.attendance.CardWorkSession>) {
     var visibleProjectCount by rememberSaveable { mutableIntStateOf(5) }
     val visibleProjects = projects.take(visibleProjectCount)
     Column(Modifier.fillMaxSize().padding(28.dp, 22.dp, 28.dp, 18.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment=Alignment.CenterVertically) {
             Text("Об’єктів: ${projects.size}", color=Muted, fontSize=13.sp, modifier=Modifier.weight(1f))
-            WorkHoursTimer(workStartedAt, workEndedAt)
+            if(sessions.isEmpty()) WorkHoursTimer(workStartedAt, workEndedAt) else CardWorkHours(sessions)
             Spacer(Modifier.width(14.dp))
             Surface(shape=RoundedCornerShape(13.dp), color=Surface, border=androidx.compose.foundation.BorderStroke(1.dp,Border)) {
                 Text("Дані на пристрої", color=Muted, fontSize=12.sp, modifier=Modifier.padding(14.dp,9.dp))
