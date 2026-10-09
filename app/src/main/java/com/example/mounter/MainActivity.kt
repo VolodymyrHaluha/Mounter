@@ -86,7 +86,7 @@ data class Project(
     // Keep the old name field readable for previously saved objects.
     val displayName: String get() = customer.ifBlank { name }
 }
-enum class Screen { HOME, OBJECTS, TEAM, PRODUCTS, OBJECT_DETAIL }
+enum class Screen { HOME, OBJECTS, PRODUCTS, OBJECT_DETAIL }
 
 private class ProjectStore(private val context: Context) {
     private val file get() = File(context.filesDir, "objects.json")
@@ -201,34 +201,12 @@ internal fun MounterApp(workStartedAt: Long = 0, workEndedAt: Long = 0, sessions
     val context = LocalContext.current
     val store = remember { ProjectStore(context) }
     var projects by remember { mutableStateOf(store.load()) }
-    val teamStore = remember { TeamStore(context) }
-    var teamMembers by remember { mutableStateOf(teamStore.load()) }
     val directoryStore = remember { LocalDirectoryStore(context) }
-    var employees by remember { mutableStateOf(directoryStore.loadWorkers(teamMembers)) }
     var clients by remember { mutableStateOf(directoryStore.loadClients(projects)) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     fun localError(error: Exception) {
         scope.launch { snackbar.showSnackbar(error.message ?: "Не вдалося зберегти дані на пристрої.", actionLabel="Закрити") }
-    }
-    fun saveTeam(members: List<Worker>) {
-        try {
-            val unique = members.distinctBy { it.id }.distinctBy { nameKey(it.name) }
-            teamStore.save(unique)
-            teamMembers = unique
-        } catch(error: Exception) { localError(error) }
-    }
-    fun addEmployee(value: String): Worker? {
-        val name = cleanName(value)
-        if(name.isBlank()) return null
-        employees.find { nameKey(it.name) == nameKey(name) }?.let { return it }
-        val worker = Worker(UUID.randomUUID().toString(), name)
-        return try {
-            val updated = employees + worker
-            directoryStore.saveWorkers(updated)
-            employees = updated
-            worker
-        } catch(error: Exception) { localError(error); null }
     }
     fun addClient(value: String): Client? {
         val name = cleanName(value)
@@ -278,14 +256,13 @@ internal fun MounterApp(workStartedAt: Long = 0, workEndedAt: Long = 0, sessions
             NavigationRail(screen) { screen = it }
             AnimatedContent(targetState = screen, label = "screen", modifier = Modifier.weight(1f)) { current ->
                 when (current) {
-                    Screen.HOME -> HomeScreen(projects, teamMembers, ::open, { screen = Screen.OBJECTS }, { screen = Screen.TEAM }, workStartedAt, workEndedAt, sessions)
+                    Screen.HOME -> HomeScreen(projects, ::open, { screen = Screen.OBJECTS }, sessions)
                     Screen.OBJECTS -> ObjectsScreen(projects, clients, ::addClient, ::open, ::openPhoto) { project ->
                         val updated = projects + project
                         store.save(updated)
                         projects = updated
                         open(project)
                     }
-                    Screen.TEAM -> TeamScreen(teamMembers, employees, ::addEmployee, ::saveTeam)
                     Screen.PRODUCTS -> ProductsScreen(projects, ::update)
                     Screen.OBJECT_DETAIL -> projects.find { it.id == selectedId }?.let { project ->
                         ObjectDetail(project, { screen = Screen.OBJECTS }, { block, photo -> openPhoto(project, block, photo) }, ::update)
@@ -311,7 +288,7 @@ internal fun MounterApp(workStartedAt: Long = 0, workEndedAt: Long = 0, sessions
 
 @Composable
 private fun NavigationRail(active: Screen, onSelect: (Screen) -> Unit) {
-    val items = listOf(Screen.HOME to "Головна", Screen.OBJECTS to "Об'єкти", Screen.TEAM to "Бригада", Screen.PRODUCTS to "Вироби")
+    val items = listOf(Screen.HOME to "Головна", Screen.OBJECTS to "Об'єкти", Screen.PRODUCTS to "Вироби")
     Column(
         Modifier.width(116.dp).fillMaxHeight().background(Surface).padding(vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -345,7 +322,6 @@ private fun NavGlyph(screen: Screen, color: Color) {
             Screen.HOME -> { drawRoundRect(color, Offset(s*.15f,s*.42f), Size(s*.7f,s*.48f), cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f)); val p=Path().apply{moveTo(s*.1f,s*.46f);lineTo(s*.5f,s*.1f);lineTo(s*.9f,s*.46f)};drawPath(p,color,style=Stroke(2.5f,cap=StrokeCap.Round)) }
             Screen.PRODUCTS -> { drawRect(color, Offset(s*.2f,s*.1f), Size(s*.6f,s*.8f), style=Stroke(2.5f)); repeat(3) { drawLine(color, Offset(s*.32f,s*(.32f+it*.18f)), Offset(s*.68f,s*(.32f+it*.18f)), strokeWidth=2f) } }
             Screen.OBJECTS, Screen.OBJECT_DETAIL -> { drawRoundRect(color, Offset(s*.13f,s*.1f), Size(s*.74f,s*.8f), cornerRadius=androidx.compose.ui.geometry.CornerRadius(4f),style=Stroke(2.5f)); repeat(2){r->repeat(2){c->drawRect(color,Offset(s*(.26f+c*.31f),s*(.27f+r*.29f)),Size(s*.16f,s*.14f))}} }
-            else -> { drawCircle(color,s*.17f,Offset(s*.5f,s*.3f));drawArc(color,200f,140f,false,Offset(s*.13f,s*.43f),Size(s*.74f,s*.52f),style=Stroke(3f,cap=StrokeCap.Round)) }
         }
     }
 }
@@ -359,7 +335,7 @@ private fun PageHeader(title: String, subtitle: String, action: (@Composable () 
 }
 
 @Composable
-private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (Project) -> Unit, onObjects: () -> Unit, onTeam: () -> Unit, workStartedAt: Long, workEndedAt: Long, sessions: List<com.example.mounter.attendance.CardWorkSession>) {
+private fun HomeScreen(projects: List<Project>, onProject: (Project) -> Unit, onObjects: () -> Unit, sessions: List<com.example.mounter.attendance.CardWorkSession>) {
     var visibleProjectCount by rememberSaveable { mutableIntStateOf(5) }
     val visibleProjects = projects.take(visibleProjectCount)
     Column(Modifier.fillMaxSize().padding(28.dp, 22.dp, 28.dp, 18.dp)) {
@@ -372,36 +348,22 @@ private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (
             }
         }
         Spacer(Modifier.height(18.dp))
-        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-            SurfaceCard(Modifier.weight(1.65f).fillMaxHeight()) {
-                SectionTitle("Об'єкти", "Всі об'єкти", onObjects)
-                Spacer(Modifier.height(10.dp))
-                LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
-                    if (projects.isEmpty()) item {
-                        Text("Додайте об’єкт у вкладці «Об’єкти»", color=Muted)
-                    }
-                    items(visibleProjects, key={it.id}) { project ->
-                        ProjectRow(project) { onProject(project) }
-                        if (project.id != visibleProjects.last().id) HorizontalDivider(color=Border)
-                    }
-                    if (visibleProjectCount < projects.size) item {
-                        TextButton(
-                            onClick={ visibleProjectCount = (visibleProjectCount + 5).coerceAtMost(projects.size) },
-                            modifier=Modifier.fillMaxWidth()
-                        ) { Text("Показати більше") }
-                    }
+        SurfaceCard(Modifier.fillMaxWidth().weight(1f)) {
+            SectionTitle("Об'єкти", "Всі об'єкти", onObjects)
+            Spacer(Modifier.height(10.dp))
+            LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+                if (projects.isEmpty()) item {
+                    Text("Додайте об’єкт у вкладці «Об’єкти»", color=Muted)
                 }
-            }
-            SurfaceCard(Modifier.weight(1f).fillMaxHeight()) {
-                SectionTitle("Моя бригада", "Керувати", onTeam)
-                Text("У складі: ${team.size}", color=Muted, fontSize=12.sp)
-                Spacer(Modifier.height(15.dp))
-                if (team.isEmpty()) {
-                    Text("Склад бригади не обрано. Додайте співробітників у вкладці «Бригада».", color=Muted, fontSize=12.sp)
-                } else {
-                    LazyColumn(Modifier.weight(1f)) {
-                        items(team, key={it.id}) { WorkerCompact(it) }
-                    }
+                items(visibleProjects, key={it.id}) { project ->
+                    ProjectRow(project) { onProject(project) }
+                    if (project.id != visibleProjects.last().id) HorizontalDivider(color=Border)
+                }
+                if (visibleProjectCount < projects.size) item {
+                    TextButton(
+                        onClick={ visibleProjectCount = (visibleProjectCount + 5).coerceAtMost(projects.size) },
+                        modifier=Modifier.fillMaxWidth()
+                    ) { Text("Показати більше") }
                 }
             }
         }
@@ -419,17 +381,6 @@ private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (
             Text("Виробів: ${project.blocks.size}", color=Muted, fontSize=12.sp)
         }
         Text(" ›", fontSize=25.sp, color=Muted)
-    }
-}
-
-@Composable private fun WorkerCompact(worker: Worker) {
-    Row(Modifier.fillMaxWidth().padding(vertical=6.dp),verticalAlignment=Alignment.CenterVertically) {
-        EmployeeAvatar(worker,38)
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f)) {
-            Text(worker.name,fontWeight=FontWeight.SemiBold,fontSize=12.sp)
-            if(worker.role.isNotBlank()) Text(worker.role,color=Muted,fontSize=10.sp)
-        }
     }
 }
 
@@ -521,62 +472,6 @@ private fun ObjectCard(project: Project, modifier: Modifier, onPhoto: (WorkBlock
         Spacer(Modifier.height(12.dp))
         Button(onClick=onOpen, modifier=Modifier.fillMaxWidth()) { Text("Відкрити об'єкт") }
     }
-}
-
-@Composable
-private fun TeamScreen(members: List<Worker>, employees: List<Worker>, onAddEmployee: (String) -> Worker?, onSave: (List<Worker>) -> Unit) {
-    var query by rememberSaveable {mutableStateOf("")}
-    val matches = if(query.isBlank()) emptyList() else employees.filter { nameKey(it.name).contains(nameKey(query)) }
-    val available = matches.filterNot { result -> members.any { it.id == result.id } }
-    Column(Modifier.fillMaxSize().padding(28.dp,22.dp)) {
-        PageHeader("Моя бригада", "У складі: ${members.size} • зміни зберігаються автоматично")
-        Spacer(Modifier.height(16.dp))
-        OutlinedTextField(query,{query=it},label={Text("Пошук співробітника за ПІБ")},singleLine=true,modifier=Modifier.fillMaxWidth().finishEditingOnOutsideTouch())
-        Spacer(Modifier.height(16.dp))
-        SurfaceCard(Modifier.fillMaxWidth().weight(1f)) {
-            LazyColumn {
-                if(query.isNotBlank()) {
-                    item {
-                        Text("Результати пошуку",fontWeight=FontWeight.Bold)
-                        if(matches.isEmpty()) {
-                            Text("Співробітника не знайдено",color=Muted)
-                            TextButton(onClick={
-                                onAddEmployee(query)?.let { worker ->
-                                    onSave(members + worker)
-                                    query=""
-                                }
-                            }) {Text("Додати співробітника")}
-                        } else if(available.isEmpty()) Text("Співробітники вже у складі бригади",color=Muted)
-                    }
-                    items(available,key={"result-${it.id}"}) {worker ->
-                        EmployeeChoice(worker,false) {checked -> if(checked) onSave(members+worker)}
-                    }
-                }
-                item {
-                    Spacer(Modifier.height(16.dp))
-                    Text("Обрані співробітники",fontWeight=FontWeight.Bold)
-                    if(members.isEmpty()) Text("Знайдіть співробітника або введіть ПІБ, щоб додати нового.",color=Muted)
-                }
-                items(members,key={"selected-${it.id}"}) {worker ->
-                    EmployeeChoice(worker,true) {checked -> if(!checked) onSave(members.filterNot {it.id==worker.id})}
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun EmployeeChoice(worker: Worker, checked: Boolean, onChecked: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable {onChecked(!checked)}.padding(vertical=9.dp),verticalAlignment=Alignment.CenterVertically) {
-        EmployeeAvatar(worker,46)
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Text(worker.name,fontWeight=FontWeight.SemiBold)
-            if(worker.role.isNotBlank()) Text(worker.role,color=Muted,fontSize=11.sp)
-        }
-        Checkbox(checked,onCheckedChange=onChecked)
-    }
-    HorizontalDivider(color=Border)
 }
 
 @Composable
