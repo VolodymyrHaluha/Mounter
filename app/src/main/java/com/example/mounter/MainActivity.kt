@@ -135,6 +135,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
     private val nfcAdapter by lazy { NfcAdapter.getDefaultAdapter(this) }
     internal var onAttendanceTag: ((Tag) -> Unit)? = null
     private var lastScanAt = -10_000L
+    private var lastScanCard = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -171,7 +172,9 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
     @Synchronized
     override fun onTagDiscovered(tag: Tag) {
         val now = SystemClock.elapsedRealtime()
-        if(now - lastScanAt < 10_000L) return
+        val card=tag.id.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        if(card == lastScanCard && now - lastScanAt < 10_000L) return
+        lastScanCard=card
         lastScanAt = now
         runOnUiThread { onAttendanceTag?.invoke(tag) }
     }
