@@ -36,12 +36,20 @@ class CardSessionsTest {
         assertEquals(3600000L,workDurationMillis(other.startedAt,other.endedAt,90000000))
         assertEquals(3500000L,workDurationMillis(other.copy(startedAt=86500000).startedAt,0,90000000))
     }
-    @Test fun largeCardListsAreNotTruncatedInUnderlyingDataAndActiveAppearFirst() {
+    @Test fun onlyActiveHoursAreListedWithoutTruncation() {
         for(size in listOf(1,2,5,10,20)) {
             val cards=(1..size).map { n -> active("$n",n.toLong()).let { if(n%2==0) it.copy(lastConfirmedAction="check_out",endedAt=5000) else it } }
             val ordered=orderedCardSessions(cards)
-            assertEquals(size,ordered.size)
-            assertTrue(ordered.takeWhile { it.active }.size==cards.count { it.active })
+            assertEquals(cards.count { it.active },ordered.size)
+            assertTrue(ordered.all { it.active })
         }
+    }
+    @Test fun departedPendingAndUnconfirmedCardsAreHidden() {
+        val running = active("B", 2)
+        val departed = active("A").copy(lastConfirmedAction="check_out", endedAt=5000)
+        val pending = active("C", 3).copy(syncStatus="pending_confirmation", pendingEventId="out-C")
+        val unconfirmed = active("D", 4).copy(serverRevision=0)
+        assertEquals(listOf(running), orderedCardSessions(listOf(departed, pending, running, unconfirmed)))
+        assertTrue(orderedCardSessions(listOf(departed)).isEmpty())
     }
 }

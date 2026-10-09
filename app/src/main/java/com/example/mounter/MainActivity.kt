@@ -356,7 +356,7 @@ private fun HomeScreen(projects: List<Project>, team: List<Worker>, onProject: (
     Column(Modifier.fillMaxSize().padding(28.dp, 22.dp, 28.dp, 18.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment=Alignment.CenterVertically) {
             Text("Об’єктів: ${projects.size}", color=Muted, fontSize=13.sp, modifier=Modifier.weight(1f))
-            if(sessions.isEmpty()) WorkHoursTimer(workStartedAt, workEndedAt) else CardWorkHours(sessions)
+            CardWorkHours(sessions)
             Spacer(Modifier.width(14.dp))
             Surface(shape=RoundedCornerShape(13.dp), color=Surface, border=androidx.compose.foundation.BorderStroke(1.dp,Border)) {
                 Text("Дані на пристрої", color=Muted, fontSize=12.sp, modifier=Modifier.padding(14.dp,9.dp))
